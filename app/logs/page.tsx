@@ -1,3 +1,19 @@
 import { PageHeader } from "@/components/AppShell";
-const logs=[["13:31:42","ERROR","client-service","Connection pool exhausted","trace=4da74f91"],["13:31:40","WARN","admin-portal-api","Request latency exceeded 900ms","route=/admin/users"],["13:31:37","INFO","billpay-api","Payment request completed","status=200"],["13:31:33","ERROR","client-service","Unhandled SqlException","pod=client-service-rk2lp"],["13:31:29","INFO","notification-worker","Message acknowledged","queue=email"]];
-export default function Logs(){return <><PageHeader eyebrow="LOG MANAGEMENT" title="Logs" description="Search structured logs with Kubernetes and trace context."><input className="search wide" defaultValue="environment:production"/></PageHeader><article className="panel"><div className="log-toolbar"><button>All levels ▾</button><button>All services ▾</button><button>Run query</button></div><div className="logs">{logs.map((l,i)=><div className="log-line" key={i}><time>{l[0]}</time><b className={l[1]==="ERROR"?"bad-text":l[1]==="WARN"?"warn-text":"good-text"}>{l[1]}</b><strong>{l[2]}</strong><span>{l[3]}</span><code>{l[4]}</code></div>)}</div></article></>;}
+import { readTelemetry } from "@/lib/telemetry";
+
+export const dynamic = "force-dynamic";
+
+export default async function Logs() {
+  const logs = await readTelemetry(200, "log");
+
+  return <>
+    <PageHeader eyebrow="LOG MANAGEMENT" title="Logs" description="Structured application logs with service, environment, and trace context."><span className="pill healthy">{logs.length} records</span></PageHeader>
+    <article className="panel">
+      <div className="log-toolbar"><button>All levels</button><button>All services</button><button>Newest first</button></div>
+      {logs.length ? <div className="logs">{logs.map((log, index) => {
+        const level = (log.severity ?? "INFO").toUpperCase();
+        return <div className="log-line" key={log.id ?? `${log.observed_at}-${index}`}><time>{new Date(log.observed_at).toLocaleTimeString()}</time><b className={level === "ERROR" ? "bad-text" : level === "WARN" ? "warn-text" : "good-text"}>{level}</b><strong>{log.service_name}</strong><span>{log.message}</span><code>{log.trace_id ? `trace=${log.trace_id}` : log.environment}</code></div>;
+      })}</div> : <div className="empty-state"><h2>No logs received</h2><p>Send custom log events or configure the collector filelog receiver.</p></div>}
+    </article>
+  </>;
+}
