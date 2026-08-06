@@ -1,0 +1,31 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - SERVICE=checkout
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:$COMMIT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:latest
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - SERVICE=inventory
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:$COMMIT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:latest
+      - .
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:latest
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:latest
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: signaldeck-lab
+options:
+  logging: CLOUD_LOGGING_ONLY
