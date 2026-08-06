@@ -1,46 +1,68 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/AppShell";
+import { formatDuration, formatRate, summarizeOverview } from "@/lib/analytics";
+import { readTelemetry } from "@/lib/telemetry";
 
-const services = [
-  { name: "billpay-api", status: "Healthy", requests: "4.8k/min", error: "0.4%", p95: "212 ms" },
-  { name: "admin-portal-api", status: "Degraded", requests: "1.7k/min", error: "2.8%", p95: "924 ms" },
-  { name: "client-service", status: "Critical", requests: "913/min", error: "6.2%", p95: "1.8 s" },
-  { name: "notification-worker", status: "Healthy", requests: "604/min", error: "0.1%", p95: "96 ms" },
-];
-
-const events = [
-  { time: "13:31", severity: "Critical", title: "Error rate above 5%", detail: "client-service · production" },
-  { time: "13:27", severity: "Warning", title: "P95 latency regression", detail: "admin-portal-api · +61% after deployment" },
-  { time: "13:22", severity: "Info", title: "Deployment completed", detail: "billpay-api · revision 7d91c" },
-  { time: "13:15", severity: "Warning", title: "Pod restarted", detail: "client-service-6b87d9c4f9-rk2lp · OOMKilled" },
-];
+export const dynamic = "force-dynamic";
 
 function StatusPill({ status }: { status: string }) {
   return <span className={`pill ${status.toLowerCase()}`}>{status}</span>;
 }
 
-export default function Home() {
+export default async function Home() {
+  const records = await readTelemetry(500);
+  const summary = summarizeOverview(records);
+  const recentEvents = records
+    .filter((record) => record.severity?.toUpperCase() === "ERROR" || record.signal_type === "k8s_event")
+    .slice(0, 4);
+
   return <>
-    <PageHeader eyebrow="PRODUCTION HEALTH" title="Overview" description="Live health across GKE workloads and application services.">
-      <button>Last 30 minutes</button><Link className="button primary" href="/connect">Connect GCP</Link>
+    <PageHeader eyebrow="LIVE TELEMETRY" title="Overview" description="Golden signals calculated from ingested traces, logs, metrics, and Kubernetes events.">
+      <button>Last 30 minutes</button><Link className="button primary" href="/connect">Add environment</Link>
     </PageHeader>
+
     <div className="metrics">
-      <article><span>Services</span><strong>42</strong><small>38 healthy</small></article>
-      <article><span>Request rate</span><strong>8.2k</strong><small>per minute</small></article>
-      <article><span>Error rate</span><strong>1.7%</strong><small className="bad">↑ 0.6%</small></article>
-      <article><span>P95 latency</span><strong>842 ms</strong><small className="bad">↑ 18%</small></article>
-      <article><span>Active alerts</span><strong>4</strong><small>1 critical</small></article>
+      <article><span>Services</span><strong>{summary.serviceCount}</strong><small>{summary.healthyCount} healthy</small></article>
+      <article><span>Request rate</span><strong>{formatRate(summary.requestRate)}</strong><small>per minute</small></article>
+      <article><span>Error rate</span><strong>{summary.errorRate.toFixed(1)}%</strong><small className={summary.errorRate >= 2 ? "bad" : ""}>{summary.errorRate >= 2 ? "Needs attention" : "Within threshold"}</small></article>
+      <article><span>P95 latency</span><strong>{formatDuration(summary.p95)}</strong><small className={summary.p95 >= 750 ? "bad" : ""}>{summary.p95 >= 750 ? "Above target" : "Within target"}</small></article>
+      <article><span>Active alerts</span><strong>{summary.activeAlerts}</strong><small>{summary.criticalAlerts} critical</small></article>
     </div>
+
+    {!records.length && <article className="panel empty-state"><h2>No telemetry received yet</h2><p>POST a trace to <code>/api/telemetry</code> or connect an OpenTelemetry Collector. The dashboard will populate automatically.</p><Link className="button primary" href="/connect">View connection setup</Link></article>}
+
     <div className="grid">
       <article className="panel services">
-        <div className="panel-title"><div><h2>Service health</h2><p>Golden signals across discovered services</p></div><Link className="button" href="/services">View all</Link></div>
+        <div className="panel-title"><div><h2>Service health</h2><p>Calculated from real trace volume, errors, and latency</p></div><Link className="button" href="/services">View all</Link></div>
         <div className="table"><div className="row heading"><span>Service</span><span>Status</span><span>Requests</span><span>Error rate</span><span>P95</span></div>
-          {services.map((service) => <Link className="row row-link" href={`/services?service=${service.name}`} key={service.name}><strong>{service.name}</strong><StatusPill status={service.status}/><span>{service.requests}</span><span>{service.error}</span><span>{service.p95}</span></Link>)}
+          {summary.services.slice(0, 5).map((service) => <Link className="row row-link" href={`/services?service=${service.name}`} key={`${service.environment}-${service.name}`}><strong>{service.name}</strong><StatusPill status={service.status}/><span>{formatRate(service.requestRate)}/min</span><span>{service.errorRate.toFixed(1)}%</span><span>{formatDuration(service.p95)}</span></Link>)}
         </div>
       </article>
-      <article className="panel cluster"><div className="panel-title"><div><h2>GKE cluster</h2><p>guenp-gke-robi-shared</p></div><StatusPill status="Healthy" /></div><div className="cluster-stat"><span>Nodes</span><strong>12 / 12</strong></div><div className="cluster-stat"><span>Pods</span><strong>184 / 188</strong></div><div className="cluster-stat"><span>CPU requested</span><strong>68%</strong></div><div className="bar"><i style={{width:"68%"}} /></div><div className="cluster-stat"><span>Memory requested</span><strong>74%</strong></div><div className="bar"><i style={{width:"74%"}} /></div><Link className="text-link" href="/kubernetes">Open Kubernetes explorer →</Link></article>
-      <article className="panel activity"><div className="panel-title"><div><h2>Incident activity</h2><p>Alerts, deployments and Kubernetes events</p></div></div>{events.map((event) => <div className="event" key={`${event.time}-${event.title}`}><time>{event.time}</time><span className={`dot ${event.severity.toLowerCase()}`} /><div><strong>{event.title}</strong><p>{event.detail}</p></div></div>)}<Link className="text-link" href="/alerts">View all alerts →</Link></article>
-      <article className="panel trace"><div className="panel-title"><div><h2>Slowest trace</h2><p>POST /payment · trace 4da74f91</p></div><strong>1.42 s</strong></div><div className="span"><span>NGINX ingress</span><i style={{width:"12%"}} /><b>18 ms</b></div><div className="span"><span>billpay-api</span><i style={{width:"28%"}} /><b>220 ms</b></div><div className="span"><span>customer-service</span><i style={{width:"23%"}} /><b>190 ms</b></div><div className="span hot"><span>Cloud SQL query</span><i style={{width:"78%"}} /><b>980 ms</b></div><Link className="text-link" href="/traces">Inspect trace →</Link></article>
+
+      <article className="panel cluster">
+        <div className="panel-title"><div><h2>GKE collector</h2><p>{records.length ? "Telemetry endpoint receiving data" : "Waiting for collector connection"}</p></div><StatusPill status={records.length ? "Healthy" : "Degraded"} /></div>
+        <div className="cluster-stat"><span>Records buffered</span><strong>{records.length}</strong></div>
+        <div className="cluster-stat"><span>Trace records</span><strong>{records.filter((record) => record.signal_type === "trace").length}</strong></div>
+        <div className="cluster-stat"><span>Log records</span><strong>{records.filter((record) => record.signal_type === "log").length}</strong></div>
+        <div className="cluster-stat"><span>Kubernetes events</span><strong>{records.filter((record) => record.signal_type === "k8s_event").length}</strong></div>
+        <Link className="text-link" href="/kubernetes">Open Kubernetes explorer →</Link>
+      </article>
+
+      <article className="panel activity">
+        <div className="panel-title"><div><h2>Incident activity</h2><p>Latest errors and Kubernetes events</p></div></div>
+        {recentEvents.length ? recentEvents.map((event) => <div className="event" key={`${event.observed_at}-${event.message}`}><time>{new Date(event.observed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span className={`dot ${event.severity?.toLowerCase() === "error" ? "critical" : "warning"}`} /><div><strong>{event.message}</strong><p>{event.service_name} · {event.environment}</p></div></div>) : <p className="muted">No incident signals have been received.</p>}
+        <Link className="text-link" href="/alerts">View alerts →</Link>
+      </article>
+
+      <article className="panel trace">
+        <div className="panel-title"><div><h2>Slowest trace</h2><p>{summary.slowestTrace?.message ?? "No trace received"}</p></div><strong>{formatDuration(summary.slowestTrace?.duration_ms ?? 0)}</strong></div>
+        {summary.slowestTrace ? <>
+          <div className="cluster-stat"><span>Service</span><strong>{summary.slowestTrace.service_name}</strong></div>
+          <div className="cluster-stat"><span>Status</span><strong>{summary.slowestTrace.status_code ?? "—"}</strong></div>
+          <div className="cluster-stat"><span>Trace ID</span><strong>{summary.slowestTrace.trace_id ?? "not supplied"}</strong></div>
+        </> : <p className="muted">Send a trace event to see the slowest request here.</p>}
+        <Link className="text-link" href="/traces">Inspect traces →</Link>
+      </article>
     </div>
   </>;
 }
