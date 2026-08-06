@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/AppShell";
 import { formatDuration, summarizeOverview, summarizeServices } from "@/lib/analytics";
+import { ensureIncident } from "@/lib/incidents";
 import { readTelemetry } from "@/lib/telemetry";
+import IncidentControls from "./IncidentControls";
 import "./incidents.css";
 
 export const dynamic = "force-dynamic";
@@ -29,45 +31,40 @@ export default async function IncidentsPage() {
       ? `${primary.name} is degraded by latency or error-rate thresholds.`
       : "No probable cause can be inferred from the current evidence sample.";
 
-  const timeline = [
-    ...errorTraces.slice(0, 5).map((record) => ({
-      time: record.observed_at,
-      type: "Failed trace",
-      title: record.message,
-      detail: `${record.service_name} · HTTP ${record.status_code ?? "error"} · ${formatDuration(record.duration_ms ?? 0)}`,
-      tone: "critical",
-    })),
-    ...errorLogs.slice(0, 5).map((record) => ({
-      time: record.observed_at,
-      type: "Error log",
-      title: record.message,
-      detail: `${record.service_name} · ${record.environment}`,
-      tone: "warning",
-    })),
-    ...k8sEvents.slice(0, 5).map((record) => ({
-      time: record.observed_at,
-      type: "Kubernetes event",
-      title: record.message,
-      detail: `${record.service_name} · ${String(record.attributes["k8s.pod.name"] ?? record.environment)}`,
-      tone: "info",
-    })),
-  ].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 10);
+  const incident = hasIncident && primary ? await ensureIncident({
+    workspace_id: "billpay",
+    title: `${primary.name} production failure`,
+    service_name: primary.name,
+    environment: primary.environment,
+    severity: primary.status === "Critical" ? "SEV-1" : "SEV-2",
+    summary: likelyCause,
+  }) : null;
+
+  const telemetryTimeline = [
+    ...errorTraces.slice(0, 5).map((record) => ({ time: record.observed_at, type: "Failed trace", title: record.message, detail: `${record.service_name} · HTTP ${record.status_code ?? "error"} · ${formatDuration(record.duration_ms ?? 0)}`, tone: "critical" })),
+    ...errorLogs.slice(0, 5).map((record) => ({ time: record.observed_at, type: "Error log", title: record.message, detail: `${record.service_name} · ${record.environment}`, tone: "warning" })),
+    ...k8sEvents.slice(0, 5).map((record) => ({ time: record.observed_at, type: "Kubernetes event", title: record.message, detail: `${record.service_name} · ${String(record.attributes["k8s.pod.name"] ?? record.environment)}`, tone: "info" })),
+  ];
+
+  const noteTimeline = (incident?.notes ?? []).map((note) => ({ time: note.created_at, type: "Commander note", title: note.message, detail: `Added by ${note.author}`, tone: "note" }));
+  const timeline = [...telemetryTimeline, ...noteTimeline].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 15);
 
   return <>
-    <PageHeader eyebrow="INCIDENT COMMAND" title={hasIncident ? "Active investigation" : "No active incident"} description="Correlate failures, logs and Kubernetes evidence into one response workflow.">
-      <span className={`pill ${hasIncident ? "critical" : "healthy"}`}>{hasIncident ? "SEV investigation" : "Healthy"}</span>
+    <PageHeader eyebrow="INCIDENT COMMAND" title={incident ? incident.title : "No active incident"} description="Correlate failures, coordinate response, and preserve the operational record.">
+      {incident ? <><span className={`pill lifecycle-${incident.status}`}>{incident.status}</span><span className="pill critical">{incident.severity}</span></> : <span className="pill healthy">Healthy</span>}
     </PageHeader>
 
     <section className="incident-hero">
       <div>
-        <span className="incident-kicker">{hasIncident ? "SignalDeck detected material failure evidence" : "Telemetry is within current thresholds"}</span>
-        <h2>{hasIncident ? `${primary?.name ?? "Application"} requires investigation` : "No immediate response required"}</h2>
-        <p>{hasIncident ? likelyCause : "Continue ingesting traces, logs and Kubernetes events to detect and investigate future incidents."}</p>
+        <span className="incident-kicker">{incident ? `Incident ${incident.id.slice(0, 8)} · ${incident.status}` : "Telemetry is within current thresholds"}</span>
+        <h2>{incident ? `${primary?.name} requires coordinated response` : "No immediate response required"}</h2>
+        <p>{incident ? incident.summary : "Continue ingesting traces, logs and Kubernetes events to detect and investigate future incidents."}</p>
+        {incident ? <div className="incident-meta"><span>Started {new Date(incident.started_at).toLocaleString()}</span><span>Owner: {incident.owner ?? "Unassigned"}</span><span>{incident.environment}</span></div> : null}
       </div>
-      <div className="incident-score">
-        <small>Evidence</small><strong>{evidenceCount}</strong><span>{affected.length} affected services</span>
-      </div>
+      <div className="incident-score"><small>Evidence</small><strong>{evidenceCount}</strong><span>{affected.length} affected services</span></div>
     </section>
+
+    {incident ? <IncidentControls incident={incident} /> : null}
 
     <div className="incident-metrics">
       <article><span>Affected services</span><strong>{affected.length}</strong><small>{affected.map((service) => service.name).join(", ") || "None"}</small></article>
@@ -78,33 +75,13 @@ export default async function IncidentsPage() {
 
     <div className="incident-layout">
       <article className="panel incident-timeline">
-        <div className="panel-title"><div><h2>Investigation timeline</h2><p>Newest correlated evidence first</p></div><span className="pill info">Live evidence</span></div>
-        {timeline.length ? timeline.map((item, index) => <div className="timeline-item" key={`${item.time}-${index}`}>
-          <div className={`timeline-marker ${item.tone}`} />
-          <time>{new Date(item.time).toLocaleTimeString()}</time>
-          <div><small>{item.type}</small><strong>{item.title}</strong><p>{item.detail}</p></div>
-        </div>) : <div className="empty-state"><h2>No incident evidence yet</h2><p>Failed traces, error logs and Kubernetes events will appear here automatically.</p></div>}
+        <div className="panel-title"><div><h2>Investigation timeline</h2><p>Telemetry evidence and human decisions in one chronology</p></div><span className="pill info">Live record</span></div>
+        {timeline.length ? timeline.map((item, index) => <div className="timeline-item" key={`${item.time}-${index}`}><div className={`timeline-marker ${item.tone}`} /><time>{new Date(item.time).toLocaleTimeString()}</time><div><small>{item.type}</small><strong>{item.title}</strong><p>{item.detail}</p></div></div>) : <div className="empty-state"><h2>No incident evidence yet</h2><p>Failed traces, error logs and Kubernetes events will appear here automatically.</p></div>}
       </article>
 
       <aside className="incident-side">
-        <article className="panel finding-card">
-          <div className="panel-title"><div><h2>Current finding</h2><p>Evidence-based, not an automated remediation</p></div></div>
-          <strong>{likelyCause}</strong>
-          <ul>
-            <li>{primary ? `${primary.name}: ${primary.errorRate.toFixed(1)}% errors, P95 ${formatDuration(primary.p95)}` : "No affected service summary"}</li>
-            <li>{errorLogs.length} related error logs are available for correlation.</li>
-            <li>{k8sEvents.length ? `${k8sEvents.length} Kubernetes events may explain infrastructure impact.` : "No Kubernetes event evidence has been ingested."}</li>
-          </ul>
-        </article>
-
-        <article className="panel action-card">
-          <div className="panel-title"><div><h2>Next actions</h2><p>Recommended investigation sequence</p></div></div>
-          {primary ? <>
-            <Link className="response-action" href={`/services/${encodeURIComponent(primary.name)}?environment=${encodeURIComponent(primary.environment)}`}><span>1</span><div><strong>Inspect affected service</strong><small>Review its traces and correlated logs</small></div></Link>
-            <Link className="response-action" href="/traces"><span>2</span><div><strong>Compare failed traces</strong><small>Find the common slow dependency</small></div></Link>
-            <Link className="response-action" href="/kubernetes"><span>3</span><div><strong>Check workload health</strong><small>Review restarts, events and pod context</small></div></Link>
-          </> : <Link className="response-action" href="/connect"><span>1</span><div><strong>Connect telemetry</strong><small>Deploy the collector to begin detection</small></div></Link>}
-        </article>
+        <article className="panel finding-card"><div className="panel-title"><div><h2>Current finding</h2><p>Evidence-based, not an automated remediation</p></div></div><strong>{likelyCause}</strong><ul><li>{primary ? `${primary.name}: ${primary.errorRate.toFixed(1)}% errors, P95 ${formatDuration(primary.p95)}` : "No affected service summary"}</li><li>{errorLogs.length} related error logs are available for correlation.</li><li>{k8sEvents.length ? `${k8sEvents.length} Kubernetes events may explain infrastructure impact.` : "No Kubernetes event evidence has been ingested."}</li></ul></article>
+        <article className="panel action-card"><div className="panel-title"><div><h2>Next actions</h2><p>Recommended investigation sequence</p></div></div>{primary ? <><Link className="response-action" href={`/services/${encodeURIComponent(primary.name)}?environment=${encodeURIComponent(primary.environment)}`}><span>1</span><div><strong>Inspect affected service</strong><small>Review its traces and correlated logs</small></div></Link><Link className="response-action" href="/traces"><span>2</span><div><strong>Compare failed traces</strong><small>Find the common slow dependency</small></div></Link><Link className="response-action" href="/kubernetes"><span>3</span><div><strong>Check workload health</strong><small>Review restarts, events and pod context</small></div></Link></> : <Link className="response-action" href="/connect"><span>1</span><div><strong>Connect telemetry</strong><small>Deploy the collector to begin detection</small></div></Link>}</article>
       </aside>
     </div>
   </>;
