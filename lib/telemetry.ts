@@ -1,3 +1,5 @@
+import { workspaceId } from "./workspace";
+
 export type SignalType = "log" | "trace" | "metric" | "k8s_event";
 
 export type TelemetryRecord = {
@@ -31,12 +33,13 @@ function supabaseConfig() {
 }
 
 export async function saveTelemetry(records: TelemetryRecord[]) {
+  const normalized = records.map((record) => ({ ...record, workspace_id: workspaceId(record.workspace_id) }));
   const config = supabaseConfig();
 
   if (!config) {
-    memoryStore.unshift(...records);
+    memoryStore.unshift(...normalized);
     memoryStore.splice(5000);
-    return { backend: "memory", accepted: records.length };
+    return { backend: "memory", accepted: normalized.length };
   }
 
   const response = await fetch(`${config.url}/rest/v1/telemetry_events`, {
@@ -47,51 +50,42 @@ export async function saveTelemetry(records: TelemetryRecord[]) {
       "Content-Type": "application/json",
       Prefer: "return=minimal",
     },
-    body: JSON.stringify(records),
+    body: JSON.stringify(normalized),
     cache: "no-store",
   });
 
-  if (!response.ok) {
-    throw new Error(`Supabase insert failed: ${response.status} ${await response.text()}`);
-  }
-
-  return { backend: "supabase", accepted: records.length };
+  if (!response.ok) throw new Error(`Supabase insert failed: ${response.status} ${await response.text()}`);
+  return { backend: "supabase", accepted: normalized.length };
 }
 
-export async function readTelemetry(limit = 100, signalType?: SignalType) {
+export async function readTelemetry(limit = 100, signalType?: SignalType, requestedWorkspace?: string) {
   const safeLimit = Math.max(1, Math.min(limit, 500));
+  const selectedWorkspace = workspaceId(requestedWorkspace);
   const config = supabaseConfig();
 
   if (!config) {
-    const records = signalType
-      ? memoryStore.filter((record) => record.signal_type === signalType)
-      : memoryStore;
+    const records = memoryStore.filter((record) =>
+      record.workspace_id === selectedWorkspace && (!signalType || record.signal_type === signalType),
+    );
     return records.slice(0, safeLimit);
   }
 
-  const filter = signalType ? `&signal_type=eq.${encodeURIComponent(signalType)}` : "";
+  const signalFilter = signalType ? `&signal_type=eq.${encodeURIComponent(signalType)}` : "";
   const response = await fetch(
-    `${config.url}/rest/v1/telemetry_events?select=*&order=observed_at.desc&limit=${safeLimit}${filter}`,
+    `${config.url}/rest/v1/telemetry_events?select=*&workspace_id=eq.${encodeURIComponent(selectedWorkspace)}&order=observed_at.desc&limit=${safeLimit}${signalFilter}`,
     {
-      headers: {
-        apikey: config.key,
-        Authorization: `Bearer ${config.key}`,
-      },
+      headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
       cache: "no-store",
     },
   );
 
-  if (!response.ok) {
-    throw new Error(`Supabase query failed: ${response.status} ${await response.text()}`);
-  }
-
+  if (!response.ok) throw new Error(`Supabase query failed: ${response.status} ${await response.text()}`);
   return (await response.json()) as TelemetryRecord[];
 }
 
 export function verifyIngestionKey(request: Request) {
   const expected = process.env.SIGNALDECK_INGESTION_KEY ?? "dev-signaldeck-key";
-  const supplied = request.headers.get("authorization");
-  return supplied === `Bearer ${expected}`;
+  return request.headers.get("authorization") === `Bearer ${expected}`;
 }
 
 export function valueOf(attributeList: Array<{ key?: string; value?: Record<string, unknown> }> | undefined, key: string) {
@@ -104,6 +98,5 @@ export function valueOf(attributeList: Array<{ key?: string; value?: Record<stri
 export function nanosToIso(value: string | number | undefined) {
   if (!value) return new Date().toISOString();
   const nanos = Number(value);
-  if (!Number.isFinite(nanos)) return new Date().toISOString();
-  return new Date(nanos / 1_000_000).toISOString();
+  return Number.isFinite(nanos) ? new Date(nanos / 1_000_000).toISOString() : new Date().toISOString();
 }
