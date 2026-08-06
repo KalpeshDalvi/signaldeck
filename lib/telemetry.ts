@@ -1,6 +1,6 @@
 import { workspaceId } from "./workspace";
 
-export type SignalType = "log" | "trace" | "metric" | "k8s_event";
+export type SignalType = "log" | "trace" | "metric" | "k8s_event" | "deployment";
 
 export type TelemetryRecord = {
   id?: string;
