@@ -1,0 +1,67 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  k8s_cluster:
+    collection_interval: 60s
+  kubeletstats:
+    collection_interval: 60s
+    auth_type: serviceAccount
+    endpoint: ${env:K8S_NODE_NAME}:10250
+    insecure_skip_verify: true
+    metric_groups: [node, pod, container]
+
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 400
+  batch:
+    send_batch_size: 512
+    timeout: 5s
+  resource:
+    attributes:
+      - key: signaldeck.workspace.id
+        value: ${env:SIGNALDECK_WORKSPACE_ID}
+        action: upsert
+      - key: deployment.environment
+        value: ${env:SIGNALDECK_ENVIRONMENT}
+        action: upsert
+  filter/drop_noise:
+    error_mode: ignore
+    logs:
+      log_record:
+        - 'IsMatch(body, "(?i)(healthz|readiness|liveness)")'
+
+exporters:
+  otlphttp/signaldeck:
+    endpoint: ${env:SIGNALDECK_ENDPOINT}/api/otel
+    encoding: json
+    headers:
+      Authorization: Bearer ${env:SIGNALDECK_INGESTION_KEY}
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      queue_size: 2048
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/signaldeck]
+    metrics:
+      receivers: [otlp, k8s_cluster, kubeletstats]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/signaldeck]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/drop_noise, resource, batch]
+      exporters: [otlphttp/signaldeck]
