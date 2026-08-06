@@ -1,13 +1,9 @@
+import { workspaceId } from "./workspace";
+
 export type IncidentStatus = "detected" | "investigating" | "mitigated" | "resolved";
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 
-export type IncidentNote = {
-  id: string;
-  author: string;
-  message: string;
-  created_at: string;
-};
-
+export type IncidentNote = { id: string; author: string; message: string; created_at: string };
 export type IncidentRecord = {
   id: string;
   workspace_id: string;
@@ -43,28 +39,41 @@ function headers(key: string) {
   return { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
 }
 
-export async function listIncidents() {
+export async function listIncidents(requestedWorkspace?: string) {
+  const selectedWorkspace = workspaceId(requestedWorkspace);
   const db = config();
-  if (!db) return [...memoryStore].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const response = await fetch(`${db.url}/rest/v1/incidents?select=*&order=updated_at.desc`, { headers: headers(db.key), cache: "no-store" });
+  if (!db) {
+    return memoryStore
+      .filter((incident) => incident.workspace_id === selectedWorkspace)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+  const response = await fetch(
+    `${db.url}/rest/v1/incidents?select=*&workspace_id=eq.${encodeURIComponent(selectedWorkspace)}&order=updated_at.desc`,
+    { headers: headers(db.key), cache: "no-store" },
+  );
   if (!response.ok) throw new Error(`Incident query failed: ${response.status} ${await response.text()}`);
   return (await response.json()) as IncidentRecord[];
 }
 
-export async function getIncident(id: string) {
-  const incidents = await listIncidents();
+export async function getIncident(id: string, requestedWorkspace?: string) {
+  const incidents = await listIncidents(requestedWorkspace);
   return incidents.find((incident) => incident.id === id) ?? null;
 }
 
 export async function ensureIncident(input: Pick<IncidentRecord, "workspace_id" | "title" | "service_name" | "environment" | "severity" | "summary">) {
-  const incidents = await listIncidents();
-  const existing = incidents.find((incident) => incident.service_name === input.service_name && incident.environment === input.environment && incident.status !== "resolved");
+  const normalizedInput = { ...input, workspace_id: workspaceId(input.workspace_id) };
+  const incidents = await listIncidents(normalizedInput.workspace_id);
+  const existing = incidents.find((incident) =>
+    incident.service_name === normalizedInput.service_name &&
+    incident.environment === normalizedInput.environment &&
+    incident.status !== "resolved",
+  );
   if (existing) return existing;
 
   const now = new Date().toISOString();
   const incident: IncidentRecord = {
     id: crypto.randomUUID(),
-    ...input,
+    ...normalizedInput,
     status: "detected",
     owner: null,
     started_at: now,
@@ -90,8 +99,8 @@ export async function ensureIncident(input: Pick<IncidentRecord, "workspace_id" 
   return ((await response.json()) as IncidentRecord[])[0];
 }
 
-export async function updateIncident(id: string, patch: Partial<Pick<IncidentRecord, "status" | "owner" | "severity" | "summary" | "notes">>) {
-  const current = await getIncident(id);
+export async function updateIncident(id: string, patch: Partial<Pick<IncidentRecord, "status" | "owner" | "severity" | "summary" | "notes">>, requestedWorkspace?: string) {
+  const current = await getIncident(id, requestedWorkspace);
   if (!current) throw new Error("Incident not found");
   const now = new Date().toISOString();
   const next: IncidentRecord = {
@@ -104,24 +113,27 @@ export async function updateIncident(id: string, patch: Partial<Pick<IncidentRec
 
   const db = config();
   if (!db) {
-    const index = memoryStore.findIndex((incident) => incident.id === id);
+    const index = memoryStore.findIndex((incident) => incident.id === id && incident.workspace_id === current.workspace_id);
     memoryStore[index] = next;
     return next;
   }
 
-  const response = await fetch(`${db.url}/rest/v1/incidents?id=eq.${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { ...headers(db.key), Prefer: "return=representation" },
-    body: JSON.stringify(next),
-    cache: "no-store",
-  });
+  const response = await fetch(
+    `${db.url}/rest/v1/incidents?id=eq.${encodeURIComponent(id)}&workspace_id=eq.${encodeURIComponent(current.workspace_id)}`,
+    {
+      method: "PATCH",
+      headers: { ...headers(db.key), Prefer: "return=representation" },
+      body: JSON.stringify(next),
+      cache: "no-store",
+    },
+  );
   if (!response.ok) throw new Error(`Incident update failed: ${response.status} ${await response.text()}`);
   return ((await response.json()) as IncidentRecord[])[0];
 }
 
-export async function addIncidentNote(id: string, author: string, message: string) {
-  const incident = await getIncident(id);
+export async function addIncidentNote(id: string, author: string, message: string, requestedWorkspace?: string) {
+  const incident = await getIncident(id, requestedWorkspace);
   if (!incident) throw new Error("Incident not found");
   const note: IncidentNote = { id: crypto.randomUUID(), author, message, created_at: new Date().toISOString() };
-  return updateIncident(id, { notes: [...incident.notes, note] });
+  return updateIncident(id, { notes: [...incident.notes, note] }, incident.workspace_id);
 }
