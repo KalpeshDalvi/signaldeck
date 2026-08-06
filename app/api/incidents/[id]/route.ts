@@ -1,7 +1,8 @@
-import { addIncidentNote, getIncident, updateIncident, type IncidentSeverity, type IncidentStatus } from "@/lib/incidents";
+import { addIncidentNote, getIncident, updateIncident, type IncidentRecord, type IncidentSeverity, type IncidentStatus } from "@/lib/incidents";
 
 const statuses: IncidentStatus[] = ["detected", "investigating", "mitigated", "resolved"];
 const severities: IncidentSeverity[] = ["SEV-1", "SEV-2", "SEV-3"];
+type IncidentPatch = Partial<Pick<IncidentRecord, "status" | "owner" | "severity" | "summary" | "notes">>;
 
 export async function GET(_: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -13,7 +14,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   try {
     const { id } = await context.params;
     const body = await request.json();
-    const patch: Record<string, unknown> = {};
+    const patch: IncidentPatch = {};
 
     if (body.status !== undefined) {
       if (!statuses.includes(body.status)) return Response.json({ error: "Invalid status" }, { status: 400 });
