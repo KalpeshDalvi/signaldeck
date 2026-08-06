@@ -2,6 +2,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/AppShell";
 import { formatDuration, summarizeOverview, summarizeServices } from "@/lib/analytics";
 import { readTelemetry } from "@/lib/telemetry";
+import "./incidents.css";
 
 export const dynamic = "force-dynamic";
 
