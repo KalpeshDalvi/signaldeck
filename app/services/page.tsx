@@ -1,3 +1,20 @@
 import { PageHeader } from "@/components/AppShell";
-const rows=[["billpay-api","Healthy","4.8k/min","0.4%","212 ms"],["admin-portal-api","Degraded","1.7k/min","2.8%","924 ms"],["client-service","Critical","913/min","6.2%","1.8 s"],["notification-worker","Healthy","604/min","0.1%","96 ms"],["payment-worker","Healthy","388/min","0.2%","144 ms"]];
-export default function Services(){return <><PageHeader eyebrow="APM" title="Services" description="Golden signals, deployments, and dependencies for every discovered service."><input className="search" placeholder="Search services"/></PageHeader><article className="panel"><div className="table"><div className="row heading"><span>Service</span><span>Status</span><span>Requests</span><span>Error rate</span><span>P95</span></div>{rows.map(r=><div className="row clickable" key={r[0]}><strong>{r[0]}</strong><span className={`pill ${r[1].toLowerCase()}`}>{r[1]}</span><span>{r[2]}</span><span>{r[3]}</span><span>{r[4]}</span></div>)}</div></article></>;}
+import { formatDuration, formatRate, summarizeServices } from "@/lib/analytics";
+import { readTelemetry } from "@/lib/telemetry";
+
+export const dynamic = "force-dynamic";
+
+export default async function Services() {
+  const records = await readTelemetry(500);
+  const services = summarizeServices(records);
+
+  return <>
+    <PageHeader eyebrow="APM" title="Services" description="Golden signals calculated from ingested distributed traces."><span className="pill healthy">{services.length} discovered</span></PageHeader>
+    <article className="panel">
+      {services.length ? <div className="table">
+        <div className="row heading"><span>Service</span><span>Status</span><span>Requests</span><span>Error rate</span><span>P95</span></div>
+        {services.map((service) => <div className="row clickable" key={`${service.environment}-${service.name}`}><strong>{service.name}</strong><span className={`pill ${service.status.toLowerCase()}`}>{service.status}</span><span>{formatRate(service.requestRate)}/min</span><span>{service.errorRate.toFixed(1)}%</span><span>{formatDuration(service.p95)}</span></div>)}
+      </div> : <div className="empty-state"><h2>No services discovered</h2><p>Ingest trace events with a <code>service_name</code> to populate this catalog.</p></div>}
+    </article>
+  </>;
+}
