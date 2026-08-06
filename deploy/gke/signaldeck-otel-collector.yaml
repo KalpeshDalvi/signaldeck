@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: signaldeck-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: signaldeck-collector
+  namespace: signaldeck-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: signaldeck-collector
+rules:
+  - apiGroups: [""]
+    resources: ["events", "namespaces", "nodes", "pods", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: signaldeck-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: signaldeck-collector
+subjects:
+  - kind: ServiceAccount
+    name: signaldeck-collector
+    namespace: signaldeck-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signaldeck-collector-config
+  namespace: signaldeck-system
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      k8sobjects:
+        auth_type: serviceAccount
+        objects:
+          - name: events
+            mode: watch
+            group: events.k8s.io
+          - name: pods
+            mode: watch
+          - name: deployments
+            mode: watch
+            group: apps
+
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 384
+        spike_limit_mib: 128
+      resource:
+        attributes:
+          - key: signaldeck.workspace.id
+            value: billpay
+            action: upsert
+          - key: deployment.environment
+            value: dev
+            action: upsert
+          - key: k8s.cluster.name
+            value: REPLACE_GKE_CLUSTER_NAME
+            action: upsert
+          - key: cloud.provider
+            value: gcp
+            action: upsert
+          - key: cloud.account.id
+            value: REPLACE_GCP_PROJECT_ID
+            action: upsert
+      batch:
+        send_batch_size: 256
+        timeout: 5s
+
+    exporters:
+      otlphttp/signaldeck:
+        endpoint: https://signaldeck-mauve.vercel.app/api/otel
+        headers:
+          Authorization: Bearer ${env:SIGNALDECK_INGESTION_KEY}
+        compression: gzip
+        timeout: 20s
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 300s
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    service:
+      extensions: [health_check]
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlphttp/signaldeck]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlphttp/signaldeck]
+        logs:
+          receivers: [otlp, k8sobjects]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlphttp/signaldeck]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signaldeck-collector
+  namespace: signaldeck-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: signaldeck-collector
+  template:
+    metadata:
+      labels:
+        app: signaldeck-collector
+    spec:
+      serviceAccountName: signaldeck-collector
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.132.0
+          args: ["--config=/conf/collector.yaml"]
+          env:
+            - name: SIGNALDECK_INGESTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: signaldeck-ingestion
+                  key: ingestion-key
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: health
+              containerPort: 13133
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: signaldeck-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signaldeck-collector
+  namespace: signaldeck-system
+spec:
+  selector:
+    app: signaldeck-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
