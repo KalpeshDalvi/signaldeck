@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 
 const links = [
   ["Overview", "/"],
+  ["Incidents", "/incidents"],
   ["Services", "/services"],
   ["Kubernetes", "/kubernetes"],
   ["Traces", "/traces"],
@@ -18,10 +19,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <main className="shell">
       <aside className="sidebar">
-        <Link href="/" className="brand brand-link"><span className="logo">S</span><div><strong>SignalDeck</strong><small>GCP Observability</small></div></Link>
+        <Link href="/" className="brand brand-link"><span className="logo">S</span><div><strong>SignalDeck</strong><small>Incident Response</small></div></Link>
         <nav>
           {links.map(([label, href]) => (
-            <Link className={pathname === href ? "active" : ""} href={href} key={href}>{label}</Link>
+            <Link className={pathname === href || (href !== "/" && pathname.startsWith(href)) ? "active" : ""} href={href} key={href}>{label}</Link>
           ))}
         </nav>
         <div className="workspace"><small>Workspace</small><strong>BillPay Platform</strong><span>Production</span></div>
