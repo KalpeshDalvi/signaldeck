@@ -1,3 +1,18 @@
 import { PageHeader } from "@/components/AppShell";
-const traces=[["4da74f91","POST /payment","client-service","1.42 s","500"],["0ac91bd2","GET /accounts","billpay-api","842 ms","200"],["77f2aa18","POST /notify","notification-worker","611 ms","202"],["ab1109c4","GET /admin/users","admin-portal-api","924 ms","200"]];
-export default function Traces(){return <><PageHeader eyebrow="DISTRIBUTED TRACING" title="Traces" description="Find slow requests and inspect every span across service boundaries."><button>Last 30 minutes</button></PageHeader><div className="split"><article className="panel"><div className="list">{traces.map((t,i)=><div className={`list-item ${i===0?"selected":""}`} key={t[0]}><div><strong>{t[1]}</strong><p>{t[2]} · {t[0]}</p></div><div><b>{t[3]}</b><span className={t[4]==="500"?"bad-text":"good-text"}>{t[4]}</span></div></div>)}</div></article><article className="panel"><div className="panel-title"><div><h2>POST /payment</h2><p>Trace 4da74f91 · 1.42 seconds</p></div></div><div className="span"><span>NGINX ingress</span><i style={{width:"12%"}}/><b>18 ms</b></div><div className="span"><span>billpay-api</span><i style={{width:"28%"}}/><b>220 ms</b></div><div className="span"><span>customer-service</span><i style={{width:"23%"}}/><b>190 ms</b></div><div className="span hot"><span>Cloud SQL query</span><i style={{width:"78%"}}/><b>980 ms</b></div></article></div></>;}
+import { formatDuration } from "@/lib/analytics";
+import { readTelemetry } from "@/lib/telemetry";
+
+export const dynamic = "force-dynamic";
+
+export default async function Traces() {
+  const traces = (await readTelemetry(200, "trace")).sort((a, b) => (b.duration_ms ?? 0) - (a.duration_ms ?? 0));
+  const selected = traces[0];
+
+  return <>
+    <PageHeader eyebrow="DISTRIBUTED TRACING" title="Traces" description="Live requests ordered by duration, with service and response context."><span className="pill healthy">{traces.length} traces</span></PageHeader>
+    {traces.length ? <div className="split">
+      <article className="panel"><div className="list">{traces.map((trace, index) => <div className={`list-item ${index === 0 ? "selected" : ""}`} key={trace.id ?? `${trace.observed_at}-${index}`}><div><strong>{trace.message}</strong><p>{trace.service_name} · {trace.trace_id ?? "trace id unavailable"}</p></div><div><b>{formatDuration(trace.duration_ms ?? 0)}</b><span className={(trace.status_code ?? 0) >= 500 ? "bad-text" : "good-text"}>{trace.status_code ?? "—"}</span></div></div>)}</div></article>
+      <article className="panel"><div className="panel-title"><div><h2>{selected.message}</h2><p>{selected.service_name} · {selected.environment}</p></div><strong>{formatDuration(selected.duration_ms ?? 0)}</strong></div><div className="cluster-stat"><span>Trace ID</span><strong>{selected.trace_id ?? "not supplied"}</strong></div><div className="cluster-stat"><span>Span ID</span><strong>{selected.span_id ?? "not supplied"}</strong></div><div className="cluster-stat"><span>HTTP status</span><strong>{selected.status_code ?? "—"}</strong></div><div className="cluster-stat"><span>Observed</span><strong>{new Date(selected.observed_at).toLocaleString()}</strong></div><pre className="attributes">{JSON.stringify(selected.attributes, null, 2)}</pre></article>
+    </div> : <article className="panel empty-state"><h2>No traces received</h2><p>Send a custom trace event or point an OTLP/HTTP exporter to <code>/api/otel/v1/traces</code>.</p></article>}
+  </>;
+}
