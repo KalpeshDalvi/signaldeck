@@ -12,6 +12,7 @@ export type TelemetryRecord = {
   message: string;
   trace_id?: string;
   span_id?: string;
+  parent_span_id?: string;
   duration_ms?: number;
   status_code?: number;
   attributes: Record<string, unknown>;
