@@ -2,15 +2,19 @@ import { nanosToIso, TelemetryRecord, valueOf } from "./telemetry";
 
 type AnyRecord = Record<string, any>;
 
+function attributesToObject(attributes: AnyRecord[] | undefined) {
+  return Object.fromEntries(
+    (attributes ?? []).map((attribute: AnyRecord) => [attribute.key, Object.values(attribute.value ?? {})[0]]),
+  );
+}
+
 function resourceContext(resource: AnyRecord | undefined) {
   const attributes = resource?.attributes;
   return {
     service: String(valueOf(attributes, "service.name") ?? "unknown-service"),
     environment: String(valueOf(attributes, "deployment.environment") ?? "unknown"),
     workspace: String(valueOf(attributes, "signaldeck.workspace.id") ?? "default"),
-    resourceAttributes: Object.fromEntries(
-      (attributes ?? []).map((attribute: AnyRecord) => [attribute.key, Object.values(attribute.value ?? {})[0]]),
-    ),
+    resourceAttributes: attributesToObject(attributes),
   };
 }
 
@@ -30,7 +34,7 @@ export function normalizeOtlpLogs(payload: AnyRecord): TelemetryRecord[] {
           message: String(body ?? ""),
           trace_id: log.traceId,
           span_id: log.spanId,
-          attributes: { ...context.resourceAttributes, scope: scopeLogs.scope?.name },
+          attributes: { ...context.resourceAttributes, ...attributesToObject(log.attributes), scope: scopeLogs.scope?.name },
           observed_at: nanosToIso(log.timeUnixNano ?? log.observedTimeUnixNano),
         });
       }
@@ -47,18 +51,26 @@ export function normalizeOtlpTraces(payload: AnyRecord): TelemetryRecord[] {
       for (const span of scopeSpans.spans ?? []) {
         const start = Number(span.startTimeUnixNano ?? 0);
         const end = Number(span.endTimeUnixNano ?? start);
+        const spanAttributes = attributesToObject(span.attributes);
+        const httpStatus = Number(spanAttributes["http.response.status_code"] ?? spanAttributes["http.status_code"]);
         output.push({
           workspace_id: context.workspace,
           signal_type: "trace",
           service_name: context.service,
           environment: context.environment,
-          severity: span.status?.code === 2 ? "ERROR" : "INFO",
+          severity: span.status?.code === 2 || httpStatus >= 500 ? "ERROR" : "INFO",
           message: span.name ?? "unnamed span",
           trace_id: span.traceId,
           span_id: span.spanId,
+          parent_span_id: span.parentSpanId || undefined,
           duration_ms: Math.max(0, (end - start) / 1_000_000),
-          status_code: span.status?.code,
-          attributes: { ...context.resourceAttributes, scope: scopeSpans.scope?.name, kind: span.kind },
+          status_code: Number.isFinite(httpStatus) ? httpStatus : span.status?.code,
+          attributes: {
+            ...context.resourceAttributes,
+            ...spanAttributes,
+            scope: scopeSpans.scope?.name,
+            "otel.span.kind": span.kind,
+          },
           observed_at: nanosToIso(span.startTimeUnixNano),
         });
       }
@@ -83,6 +95,7 @@ export function normalizeOtlpMetrics(payload: AnyRecord): TelemetryRecord[] {
             message: metric.name ?? "unnamed metric",
             attributes: {
               ...context.resourceAttributes,
+              ...attributesToObject(point.attributes),
               unit: metric.unit,
               value: point.asDouble ?? point.asInt ?? point.sum ?? point.count,
             },
