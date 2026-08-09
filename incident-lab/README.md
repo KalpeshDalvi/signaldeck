@@ -1,99 +1,138 @@
 # SignalDeck Incident Lab
 
-A deliberately small GKE-native application for safely generating real traces, deployment evidence, latency, HTTP failures, and dependency failures in a personal GCP project.
+A deliberately small GKE-native application for generating real distributed traces, Kubernetes workload evidence, deployment changes, latency, HTTP failures, and dependency failures in a personal GCP project.
 
 ## Architecture
 
 ```text
-client -> checkout -> inventory
-              |           |
-              +---- OTLP --+
-                     |
-            SignalDeck Collector
-                     |
-         hosted SignalDeck ingestion
+traffic-generator
+       |
+       v
+   checkout ----> inventory
+       |              |
+       +------ OTLP --+
+              |
+      SignalDeck Collector
+        |          |
+        |          +-- watches signaldeck-lab pods, deployments and events
+        |
+        v
+https://signaldeck-mauve.vercel.app/api/otel
+              |
+              v
+          SignalDeck
 ```
 
-## Failure modes
+## Recommended deployment: one command
 
-Send the `x-failure-mode` request header to the checkout service:
+Requirements:
 
-- `error`: checkout returns HTTP 500.
-- `latency`: checkout waits 2.5 seconds.
-- `dependency-error`: inventory returns HTTP 500.
-- `dependency-latency`: inventory waits 3 seconds.
-- `flaky`: intermittent checkout and inventory failures.
+- Google Cloud CLI (`gcloud`)
+- `kubectl`
+- a personal GCP project with billing enabled
+- the same SignalDeck ingestion key configured in Vercel
 
-## Build images
-
-Set values for your personal project:
+From the repository root:
 
 ```powershell
-$ProjectId = "YOUR_GCP_PROJECT_ID"
-$Region = "us-central1"
-$Repo = "signaldeck-lab"
+cd F:\signaldeck
+git checkout main
+git pull origin main
 
-gcloud config set project $ProjectId
-gcloud services enable artifactregistry.googleapis.com container.googleapis.com cloudbuild.googleapis.com
-
-gcloud artifacts repositories create $Repo `
-  --repository-format=docker `
-  --location=$Region `
-  --description="SignalDeck Incident Lab"
-
-gcloud builds submit incident-lab `
-  --config incident-lab/cloudbuild.yaml `
-  --substitutions=_REGION=$Region,_REPOSITORY=$Repo
+.\incident-lab\setup-gcp.ps1 `
+  -ProjectId "YOUR_PERSONAL_GCP_PROJECT_ID" `
+  -IngestionKey "YOUR_SIGNALDECK_INGESTION_KEY"
 ```
 
-## Deploy
+The script enables GKE, Artifact Registry, and Cloud Build; creates an Artifact Registry repository; builds both application images; creates a GKE Autopilot cluster named `signaldeck-lab`; deploys the OpenTelemetry collector; deploys checkout and inventory; and starts continuous traffic every two seconds.
 
-Replace `PROJECT_ID` and `REGION` in `k8s/incident-lab.yaml`, then:
+Default region: `us-central1`.
+
+## Validate the live lab
 
 ```powershell
-kubectl apply -f incident-lab/k8s/incident-lab.yaml
-kubectl -n signaldeck-lab rollout status deployment/inventory
-kubectl -n signaldeck-lab rollout status deployment/checkout
+kubectl -n signaldeck-lab get pods
+kubectl -n signaldeck-system get pods
+kubectl -n signaldeck-system logs deployment/signaldeck-collector --tail=100
 ```
 
-## Generate traffic
+Open:
+
+- https://signaldeck-mauve.vercel.app/traces
+- https://signaldeck-mauve.vercel.app/kubernetes
+- https://signaldeck-mauve.vercel.app/incidents
+
+Healthy traffic should continuously create real checkout -> inventory distributed traces.
+
+## Controlled incident scenarios
+
+Use the scenario runner:
+
+```powershell
+.\incident-lab\failure-scenarios.ps1 -Scenario latency
+.\incident-lab\failure-scenarios.ps1 -Scenario error
+.\incident-lab\failure-scenarios.ps1 -Scenario flaky
+.\incident-lab\failure-scenarios.ps1 -Scenario restart
+.\incident-lab\failure-scenarios.ps1 -Scenario scale-down
+```
+
+Return the lab to healthy state:
+
+```powershell
+.\incident-lab\failure-scenarios.ps1 -Scenario recover
+```
+
+### Expected evidence
+
+`latency` should increase checkout trace duration and expose the slow dependency in the trace waterfall.
+
+`error` should create failed checkout traces and an incident candidate.
+
+`flaky` should create intermittent failed traces and changing error-rate evidence.
+
+`restart` should produce Deployment/Pod/Event evidence without intentionally breaking the application for long.
+
+`scale-down` removes inventory replicas, causing dependency failures and Kubernetes deployment evidence.
+
+## Manual request testing
 
 ```powershell
 kubectl -n signaldeck-lab port-forward service/checkout 8088:8080
 ```
 
-In another PowerShell window:
+Then:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri "http://localhost:8088/checkout"
-
-Invoke-WebRequest -Method Post `
-  -Uri "http://localhost:8088/checkout" `
-  -Headers @{ "x-failure-mode" = "dependency-latency" }
-
-Invoke-WebRequest -Method Post `
-  -Uri "http://localhost:8088/checkout" `
-  -Headers @{ "x-failure-mode" = "dependency-error" }
+Invoke-WebRequest -Method Post -Uri "http://localhost:8088/checkout" -Headers @{ "x-failure-mode" = "latency" }
+Invoke-WebRequest -Method Post -Uri "http://localhost:8088/checkout" -Headers @{ "x-failure-mode" = "error" }
 ```
 
-## Generate Kubernetes change evidence
-
-```powershell
-kubectl -n signaldeck-lab set env deployment/checkout FAILURE_MODE=flaky
-kubectl -n signaldeck-lab rollout status deployment/checkout
-```
-
-Restore healthy behavior:
-
-```powershell
-kubectl -n signaldeck-lab set env deployment/checkout FAILURE_MODE=none
-kubectl -n signaldeck-lab rollout status deployment/checkout
-```
-
-## Remove the lab
+## Remove application workloads
 
 ```powershell
 kubectl delete namespace signaldeck-lab
+kubectl delete namespace signaldeck-system
+kubectl delete clusterrole signaldeck-lab-reader --ignore-not-found
+kubectl delete clusterrolebinding signaldeck-lab-reader --ignore-not-found
 ```
 
-The lab has no persistent database and stores no business data.
+## Delete the GKE cluster when finished
+
+This is the important cost-control step:
+
+```powershell
+gcloud container clusters delete signaldeck-lab `
+  --location=us-central1 `
+  --project=YOUR_PERSONAL_GCP_PROJECT_ID
+```
+
+Optionally delete the Artifact Registry repository as well:
+
+```powershell
+gcloud artifacts repositories delete signaldeck-lab `
+  --location=us-central1 `
+  --project=YOUR_PERSONAL_GCP_PROJECT_ID
+```
+
+The lab contains no persistent business database and is intended only for controlled SignalDeck testing.
