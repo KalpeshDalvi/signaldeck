@@ -5,7 +5,7 @@ steps:
       - --build-arg
       - SERVICE=checkout
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:${_IMAGE_TAG}
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:latest
       - .
@@ -15,17 +15,18 @@ steps:
       - --build-arg
       - SERVICE=inventory
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:${_IMAGE_TAG}
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:latest
       - .
 images:
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:${_IMAGE_TAG}
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/checkout:latest
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:${_IMAGE_TAG}
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/inventory:latest
 substitutions:
   _REGION: us-central1
   _REPOSITORY: signaldeck-lab
+  _IMAGE_TAG: manual
 options:
   logging: CLOUD_LOGGING_ONLY
