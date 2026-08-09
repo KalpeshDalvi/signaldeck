@@ -15,8 +15,6 @@ function Invoke-GCloud {
     [switch]$Quiet
   )
 
-  # Windows PowerShell can turn normal gcloud stderr progress/status messages into
-  # ErrorRecords. Capture the native process output and use its exit code instead.
   $previousPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
@@ -32,7 +30,7 @@ function Invoke-GCloud {
   }
 
   if ($exitCode -ne 0 -and -not $AllowFailure) {
-    throw "gcloud command failed with exit code $exitCode: gcloud $($Arguments -join ' ')"
+    throw "gcloud command failed with exit code ${exitCode}: gcloud $($Arguments -join ' ')"
   }
 
   return [pscustomobject]@{
