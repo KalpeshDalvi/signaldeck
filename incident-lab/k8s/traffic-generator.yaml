@@ -23,7 +23,7 @@ spec:
           args:
             - |
               while true; do
-                curl -sS --max-time 5 http://checkout:8080/checkout >/dev/null || true
+                curl -sS -X POST --max-time 5 http://checkout:8080/checkout >/dev/null || true
                 sleep 2
               done
           resources:
