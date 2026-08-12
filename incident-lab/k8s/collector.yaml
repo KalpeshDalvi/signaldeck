@@ -93,6 +93,7 @@ data:
       otlphttp/signaldeck:
         endpoint: https://signaldeck-mauve.vercel.app/api/otel
         encoding: json
+        compression: none
         headers:
           Authorization: Bearer ${env:SIGNALDECK_INGESTION_KEY}
         timeout: 20s
