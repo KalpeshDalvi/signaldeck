@@ -46,10 +46,17 @@ function numericHttpStatus(attributes: Record<string, unknown>) {
 }
 
 function kubernetesEvidence(body: any, context: ReturnType<typeof resourceContext>, log: AnyRecord, scopeName?: string): TelemetryRecord | null {
-  if (!body || typeof body !== "object" || !body.kind || !body.metadata) return null;
+  if (!body || typeof body !== "object") return null;
 
-  const kind = String(body.kind);
-  const metadata = body.metadata ?? {};
+  // k8sobjects watch-mode records are envelopes such as
+  // { type: "ADDED", object: { kind: "Pod", metadata: ... } }.
+  // Pull/direct records may contain the Kubernetes object itself.
+  const envelope = body.object && typeof body.object === "object" ? body : undefined;
+  const object = envelope?.object ?? body;
+  if (!object || typeof object !== "object" || !object.kind || !object.metadata) return null;
+
+  const kind = String(object.kind);
+  const metadata = object.metadata ?? {};
   const namespace = String(metadata.namespace ?? "cluster");
   const name = String(metadata.name ?? "unknown");
   const attributes: Record<string, unknown> = {
@@ -62,68 +69,69 @@ function kubernetesEvidence(body: any, context: ReturnType<typeof resourceContex
     "k8s.uid": metadata.uid,
     "k8s.resource_version": metadata.resourceVersion,
   };
+  if (envelope?.type) attributes["k8s.watch.type"] = String(envelope.type);
 
   let message = `${kind} ${namespace}/${name} changed`;
   let severity = "INFO";
   let serviceName = name;
 
   if (kind === "Event") {
-    const reason = body.reason ?? "Kubernetes event";
-    const note = body.note ?? body.message ?? "";
-    const regarding = body.regarding ?? body.involvedObject ?? {};
+    const reason = object.reason ?? "Kubernetes event";
+    const note = object.note ?? object.message ?? "";
+    const regarding = object.regarding ?? object.involvedObject ?? {};
     serviceName = String(regarding.name ?? name);
     message = `${reason}${note ? `: ${note}` : ""}`;
-    severity = String(body.type ?? "Normal").toLowerCase() === "warning" ? "ERROR" : "INFO";
+    severity = String(object.type ?? "Normal").toLowerCase() === "warning" ? "ERROR" : "INFO";
     attributes["k8s.event.reason"] = reason;
-    attributes["k8s.event.type"] = body.type ?? "Normal";
-    attributes["k8s.event.action"] = body.action;
+    attributes["k8s.event.type"] = object.type ?? "Normal";
+    attributes["k8s.event.action"] = object.action;
     attributes["k8s.object.kind"] = regarding.kind;
     attributes["k8s.object.name"] = regarding.name ?? name;
   } else if (kind === "Pod") {
-    const statuses = body.status?.containerStatuses ?? [];
+    const statuses = object.status?.containerStatuses ?? [];
     const restartCount = statuses.reduce((sum: number, status: AnyRecord) => sum + Number(status.restartCount ?? 0), 0);
     const waitingReason = statuses.map((status: AnyRecord) => status.state?.waiting?.reason).find(Boolean);
     const terminatedReason = statuses.map((status: AnyRecord) => status.lastState?.terminated?.reason ?? status.state?.terminated?.reason).find(Boolean);
-    const reason = waitingReason ?? terminatedReason ?? body.status?.reason;
-    const phase = body.status?.phase ?? "Unknown";
+    const reason = waitingReason ?? terminatedReason ?? object.status?.reason;
+    const phase = object.status?.phase ?? "Unknown";
     message = `Pod ${name} is ${phase}${reason ? ` (${reason})` : ""}`;
     severity = phase === "Failed" || waitingReason === "CrashLoopBackOff" || terminatedReason === "OOMKilled" ? "ERROR" : "INFO";
     attributes["k8s.pod.name"] = name;
     attributes["k8s.pod.phase"] = phase;
     attributes["k8s.pod.restart_count"] = restartCount;
     attributes["k8s.pod.reason"] = reason;
-    attributes["k8s.node.name"] = body.spec?.nodeName;
-    attributes["k8s.pod.ip"] = body.status?.podIP;
+    attributes["k8s.node.name"] = object.spec?.nodeName;
+    attributes["k8s.pod.ip"] = object.status?.podIP;
     attributes["k8s.workload.name"] = metadata.labels?.["app.kubernetes.io/name"] ?? metadata.labels?.app;
   } else if (kind === "Deployment") {
-    const images = (body.spec?.template?.spec?.containers ?? []).map((container: AnyRecord) => container.image).filter(Boolean);
+    const images = (object.spec?.template?.spec?.containers ?? []).map((container: AnyRecord) => container.image).filter(Boolean);
     serviceName = String(metadata.labels?.["app.kubernetes.io/name"] ?? metadata.labels?.app ?? name);
-    message = `Deployment ${name} observed: ${body.status?.readyReplicas ?? 0}/${body.spec?.replicas ?? 0} ready`;
+    message = `Deployment ${name} observed: ${object.status?.readyReplicas ?? 0}/${object.spec?.replicas ?? 0} ready`;
     attributes["k8s.deployment.name"] = name;
-    attributes["k8s.deployment.replicas"] = body.spec?.replicas ?? 0;
-    attributes["k8s.deployment.ready_replicas"] = body.status?.readyReplicas ?? 0;
-    attributes["k8s.deployment.updated_replicas"] = body.status?.updatedReplicas ?? 0;
+    attributes["k8s.deployment.replicas"] = object.spec?.replicas ?? 0;
+    attributes["k8s.deployment.ready_replicas"] = object.status?.readyReplicas ?? 0;
+    attributes["k8s.deployment.updated_replicas"] = object.status?.updatedReplicas ?? 0;
     attributes["k8s.container.images"] = images;
     attributes["k8s.deployment.generation"] = metadata.generation;
-    severity = Number(body.status?.readyReplicas ?? 0) < Number(body.spec?.replicas ?? 0) ? "WARN" : "INFO";
+    severity = Number(object.status?.readyReplicas ?? 0) < Number(object.spec?.replicas ?? 0) ? "WARN" : "INFO";
   } else if (kind === "Service") {
-    const ports = (body.spec?.ports ?? []).map((port: AnyRecord) => ({
+    const ports = (object.spec?.ports ?? []).map((port: AnyRecord) => ({
       name: port.name,
       port: port.port,
       protocol: port.protocol ?? "TCP",
       targetPort: port.targetPort,
       nodePort: port.nodePort,
     }));
-    const serviceType = String(body.spec?.type ?? "ClusterIP");
-    const clusterIp = body.spec?.clusterIP ?? body.spec?.clusterIp;
+    const serviceType = String(object.spec?.type ?? "ClusterIP");
+    const clusterIp = object.spec?.clusterIP ?? object.spec?.clusterIp;
     serviceName = name;
     message = `Service ${namespace}/${name} observed: ${serviceType}${clusterIp ? ` ${clusterIp}` : ""}`;
     attributes["k8s.service.name"] = name;
     attributes["k8s.service.type"] = serviceType;
     attributes["k8s.service.cluster_ip"] = clusterIp;
     attributes["k8s.service.ports"] = ports;
-    attributes["k8s.service.selector"] = body.spec?.selector ?? {};
-    attributes["k8s.service.external_name"] = body.spec?.externalName;
+    attributes["k8s.service.selector"] = object.spec?.selector ?? {};
+    attributes["k8s.service.external_name"] = object.spec?.externalName;
   }
 
   return {
