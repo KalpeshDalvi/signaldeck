@@ -39,6 +39,40 @@ function Invoke-GCloud {
   }
 }
 
+function Invoke-Kubectl {
+  param(
+    [Parameter(Mandatory=$true)][string[]]$Arguments,
+    [switch]$AllowFailure,
+    [switch]$Quiet
+  )
+
+  # kubectl and GKE Autopilot legitimately emit warnings to stderr (for example,
+  # resource-request mutation). Windows PowerShell can surface those as errors when
+  # ErrorActionPreference is Stop, so judge success by the native exit code instead.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & kubectl @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousPreference
+  }
+
+  if (-not $Quiet -and $output) {
+    $output | ForEach-Object { Write-Host $_ }
+  }
+
+  if ($exitCode -ne 0 -and -not $AllowFailure) {
+    throw "kubectl command failed with exit code ${exitCode}: kubectl $($Arguments -join ' ')"
+  }
+
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output   = @($output)
+  }
+}
+
 Write-Host "Configuring Google Cloud project $ProjectId" -ForegroundColor Cyan
 Invoke-GCloud -Arguments @("config", "set", "project", $ProjectId) | Out-Null
 
@@ -107,50 +141,56 @@ Invoke-GCloud -Arguments @(
 ) | Out-Null
 
 Write-Host "Connected Kubernetes context:" -ForegroundColor Cyan
-kubectl config current-context
-if ($LASTEXITCODE -ne 0) { throw "kubectl cannot read the current context." }
+Invoke-Kubectl -Arguments @("config", "current-context") | Out-Null
 
-kubectl create namespace signaldeck-system --dry-run=client -o yaml | kubectl apply -f -
-if ($LASTEXITCODE -ne 0) { throw "Failed to create signaldeck-system namespace." }
+# Namespace and secret are created idempotently. Keep the pipeline but prevent
+# benign native stderr from becoming a terminating PowerShell error.
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+  kubectl create namespace signaldeck-system --dry-run=client -o yaml | kubectl apply -f -
+  $pipelineExit = $LASTEXITCODE
+}
+finally {
+  $ErrorActionPreference = $previousPreference
+}
+if ($pipelineExit -ne 0) { throw "Failed to create signaldeck-system namespace." }
 
-kubectl -n signaldeck-system create secret generic signaldeck-ingestion `
-  --from-literal="ingestion-key=$IngestionKey" `
-  --dry-run=client -o yaml | kubectl apply -f -
-if ($LASTEXITCODE -ne 0) { throw "Failed to create SignalDeck ingestion secret." }
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+  kubectl -n signaldeck-system create secret generic signaldeck-ingestion `
+    --from-literal="ingestion-key=$IngestionKey" `
+    --dry-run=client -o yaml | kubectl apply -f -
+  $pipelineExit = $LASTEXITCODE
+}
+finally {
+  $ErrorActionPreference = $previousPreference
+}
+if ($pipelineExit -ne 0) { throw "Failed to create SignalDeck ingestion secret." }
 
-kubectl apply -f incident-lab/k8s/collector.yaml
-if ($LASTEXITCODE -ne 0) { throw "Failed to deploy SignalDeck collector." }
+Invoke-Kubectl -Arguments @("apply", "-f", "incident-lab/k8s/collector.yaml") | Out-Null
 
 $tempManifest = Join-Path $env:TEMP "signaldeck-incident-lab.rendered.yaml"
 (Get-Content incident-lab/k8s/incident-lab.yaml -Raw) `
   -replace "REGION", $Region `
   -replace "PROJECT_ID", $ProjectId | Set-Content $tempManifest
 
-kubectl apply -f $tempManifest
-if ($LASTEXITCODE -ne 0) { throw "Failed to deploy Incident Lab workloads." }
-
-kubectl apply -f incident-lab/k8s/traffic-generator.yaml
-if ($LASTEXITCODE -ne 0) { throw "Failed to deploy traffic generator." }
+Invoke-Kubectl -Arguments @("apply", "-f", $tempManifest) | Out-Null
+Invoke-Kubectl -Arguments @("apply", "-f", "incident-lab/k8s/traffic-generator.yaml") | Out-Null
 
 Write-Host "Waiting for workloads..." -ForegroundColor Cyan
-kubectl -n signaldeck-system rollout status deployment/signaldeck-collector --timeout=5m
-if ($LASTEXITCODE -ne 0) { throw "SignalDeck collector did not become ready." }
-
-kubectl -n signaldeck-lab rollout status deployment/inventory --timeout=5m
-if ($LASTEXITCODE -ne 0) { throw "Inventory did not become ready." }
-
-kubectl -n signaldeck-lab rollout status deployment/checkout --timeout=5m
-if ($LASTEXITCODE -ne 0) { throw "Checkout did not become ready." }
-
-kubectl -n signaldeck-lab rollout status deployment/traffic-generator --timeout=5m
-if ($LASTEXITCODE -ne 0) { throw "Traffic generator did not become ready." }
+Invoke-Kubectl -Arguments @("-n", "signaldeck-system", "rollout", "status", "deployment/signaldeck-collector", "--timeout=5m") | Out-Null
+Invoke-Kubectl -Arguments @("-n", "signaldeck-lab", "rollout", "status", "deployment/inventory", "--timeout=5m") | Out-Null
+Invoke-Kubectl -Arguments @("-n", "signaldeck-lab", "rollout", "status", "deployment/checkout", "--timeout=5m") | Out-Null
+Invoke-Kubectl -Arguments @("-n", "signaldeck-lab", "rollout", "status", "deployment/traffic-generator", "--timeout=5m") | Out-Null
 
 Write-Host ""
 Write-Host "SignalDeck Incident Lab is running." -ForegroundColor Green
-kubectl -n signaldeck-lab get pods,svc
+Invoke-Kubectl -Arguments @("-n", "signaldeck-lab", "get", "pods,svc") | Out-Null
 Write-Host ""
 Write-Host "Collector status:" -ForegroundColor Green
-kubectl -n signaldeck-system get pods
+Invoke-Kubectl -Arguments @("-n", "signaldeck-system", "get", "pods") | Out-Null
 Write-Host ""
 Write-Host "Live traffic is generated every 2 seconds. Open:" -ForegroundColor Green
 Write-Host "https://signaldeck-mauve.vercel.app/traces"
