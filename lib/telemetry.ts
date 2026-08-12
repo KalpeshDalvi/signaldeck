@@ -34,11 +34,25 @@ function supabaseConfig() {
 }
 
 export async function saveTelemetry(records: TelemetryRecord[]) {
-  const normalized = records.map((record) => ({ ...record, workspace_id: workspaceId(record.workspace_id) }));
+  const normalized = records.map((record) => ({
+    workspace_id: workspaceId(record.workspace_id),
+    signal_type: record.signal_type,
+    service_name: record.service_name,
+    environment: record.environment,
+    severity: record.severity ?? null,
+    message: record.message,
+    trace_id: record.trace_id ?? null,
+    span_id: record.span_id ?? null,
+    parent_span_id: record.parent_span_id ?? null,
+    duration_ms: record.duration_ms ?? null,
+    status_code: record.status_code ?? null,
+    attributes: record.attributes ?? {},
+    observed_at: record.observed_at,
+  }));
   const config = supabaseConfig();
 
   if (!config) {
-    memoryStore.unshift(...normalized);
+    memoryStore.unshift(...(normalized as TelemetryRecord[]));
     memoryStore.splice(5000);
     return { backend: "memory", accepted: normalized.length };
   }
