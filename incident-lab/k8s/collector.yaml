@@ -92,6 +92,7 @@ data:
     exporters:
       otlphttp/signaldeck:
         endpoint: https://signaldeck-mauve.vercel.app/api/otel
+        encoding: json
         headers:
           Authorization: Bearer ${env:SIGNALDECK_INGESTION_KEY}
         compression: gzip
