@@ -106,6 +106,24 @@ function kubernetesEvidence(body: any, context: ReturnType<typeof resourceContex
     attributes["k8s.container.images"] = images;
     attributes["k8s.deployment.generation"] = metadata.generation;
     severity = Number(body.status?.readyReplicas ?? 0) < Number(body.spec?.replicas ?? 0) ? "WARN" : "INFO";
+  } else if (kind === "Service") {
+    const ports = (body.spec?.ports ?? []).map((port: AnyRecord) => ({
+      name: port.name,
+      port: port.port,
+      protocol: port.protocol ?? "TCP",
+      targetPort: port.targetPort,
+      nodePort: port.nodePort,
+    }));
+    const serviceType = String(body.spec?.type ?? "ClusterIP");
+    const clusterIp = body.spec?.clusterIP ?? body.spec?.clusterIp;
+    serviceName = name;
+    message = `Service ${namespace}/${name} observed: ${serviceType}${clusterIp ? ` ${clusterIp}` : ""}`;
+    attributes["k8s.service.name"] = name;
+    attributes["k8s.service.type"] = serviceType;
+    attributes["k8s.service.cluster_ip"] = clusterIp;
+    attributes["k8s.service.ports"] = ports;
+    attributes["k8s.service.selector"] = body.spec?.selector ?? {};
+    attributes["k8s.service.external_name"] = body.spec?.externalName;
   }
 
   return {
