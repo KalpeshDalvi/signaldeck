@@ -60,12 +60,15 @@ data:
             namespaces: [signaldeck-lab]
           - name: pods
             mode: watch
+            include_initial_state: true
             namespaces: [signaldeck-lab]
           - name: services
             mode: watch
+            include_initial_state: true
             namespaces: [signaldeck-lab]
           - name: deployments
             mode: watch
+            include_initial_state: true
             group: apps
             namespaces: [signaldeck-lab]
 
