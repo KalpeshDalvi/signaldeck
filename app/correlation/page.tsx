@@ -42,7 +42,24 @@ export default async function CorrelationPage() {
       <div className="split">
         <article className="panel">
           <div className="panel-title"><div><h2>Evidence chain</h2><p>Why SignalDeck produced this hypothesis</p></div></div>
-          <div className="list">{finding.evidence.map((item, index) => <div className="list-item" key={item}><div><strong>{index + 1}. {item}</strong></div></div>)}</div>
+          <div className="list">
+            {finding.evidenceSteps.map((step, index) => <div className="list-item" key={`${step.label}-${index}`}>
+              <div style={{width: "100%"}}>
+                <div style={{display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center"}}>
+                  <strong>{index + 1}. {step.label}</strong>
+                  <span className="pill info" style={{fontSize: "10px"}}>{step.source}</span>
+                </div>
+                <p style={{marginTop: "7px"}}>{step.detail}</p>
+                {step.meta ? <small style={{display: "block", marginTop: "5px"}}>{step.meta}</small> : null}
+              </div>
+            </div>)}
+          </div>
+          <div style={{marginTop: "22px", paddingTop: "18px", borderTop: "1px solid var(--line)"}}>
+            <div className="panel-title"><div><h2>Evidence coverage</h2><p>Independent signals supporting the current hypothesis</p></div><strong>{finding.coverage.filter((item) => item.present).length}/{finding.coverage.length}</strong></div>
+            <div className="cluster-facts" style={{gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))"}}>
+              {finding.coverage.map((item) => <div key={item.label}><span>{item.present ? "✓ " : "○ "}{item.label}</span><strong>{item.detail}</strong></div>)}
+            </div>
+          </div>
         </article>
         <article className="panel">
           <div className="panel-title"><div><h2>Investigation path</h2><p>Move from symptom to infrastructure evidence</p></div></div>
