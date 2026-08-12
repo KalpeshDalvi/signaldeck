@@ -58,11 +58,12 @@ data:
             mode: watch
             group: events.k8s.io
             namespaces: [signaldeck-lab]
+          # Poll current object state so healthy/unchanged objects do not
+          # disappear from SignalDeck's recent telemetry window.
           - name: pods
-            mode: watch
+            mode: pull
+            interval: 15s
             namespaces: [signaldeck-lab]
-          # Pull current state so unchanged/scaled-to-zero objects are still
-          # emitted after collector restarts. Watch-only mode can miss them.
           - name: services
             mode: pull
             interval: 15s
