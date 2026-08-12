@@ -13,10 +13,11 @@ export default async function CorrelationPage() {
   const finding = correlateIncident(records, primary);
   const failed = records.filter((r) => r.signal_type === "trace" && ((r.status_code ?? 0) >= 500 || r.severity?.toUpperCase() === "ERROR"));
   const kube = records.filter((r) => r.signal_type === "k8s_event");
+  const displayScore = finding ? Math.min(finding.score, 95) : 0;
 
   return <>
     <PageHeader eyebrow="CORRELATION ENGINE" title="Incident correlation" description="Connect application failures, dependencies, and Kubernetes evidence into one investigation path.">
-      <span className={`pill ${finding?.confidence === "High" ? "critical" : finding?.confidence === "Medium" ? "warning" : "info"}`}>{finding ? `${finding.confidence} confidence · ${finding.score}%` : "Awaiting evidence"}</span>
+      <span className={`pill ${finding?.confidence === "High" ? "critical" : finding?.confidence === "Medium" ? "warning" : "info"}`}>{finding ? `${finding.confidence} confidence · ${displayScore}%` : "Awaiting evidence"}</span>
     </PageHeader>
 
     {finding && primary ? <>
@@ -24,10 +25,10 @@ export default async function CorrelationPage() {
         <div className="panel-title"><div><h2>Current hypothesis</h2><p>Evidence-backed correlation, not an asserted root cause</p></div></div>
         <h1 style={{fontSize: "24px"}}>{finding.summary}</h1>
         <div className="cluster-facts">
-          <div><span>Affected service</span><strong>{finding.affectedService}</strong></div>
-          <div><span>Dependency</span><strong>{finding.dependency ?? "Not proven"}</strong></div>
-          <div><span>Pod</span><strong>{finding.pod ?? "No unhealthy pod"}</strong></div>
-          <div><span>Workload</span><strong>{finding.workload ?? "Not identified"}</strong></div>
+          <div><span>Impacted service</span><strong>{finding.affectedService}</strong></div>
+          <div><span>Suspected root dependency</span><strong>{finding.dependency ?? "Not proven"}</strong></div>
+          <div><span>Pod evidence</span><strong>{finding.pod ?? "No unhealthy pod"}</strong></div>
+          <div><span>Failing workload</span><strong>{finding.workload ?? "Not identified"}</strong></div>
         </div>
       </article>
 
@@ -36,7 +37,7 @@ export default async function CorrelationPage() {
         <article><span>P95 latency</span><strong>{formatDuration(primary.p95)}</strong><small className={primary.p95 >= 750 ? "bad" : ""}>{primary.status}</small></article>
         <article><span>Failed traces</span><strong>{failed.length}</strong><small>current evidence sample</small></article>
         <article><span>K8s evidence</span><strong>{kube.length}</strong><small>objects and events</small></article>
-        <article><span>Confidence</span><strong>{finding.score}%</strong><small>{finding.confidence} correlation</small></article>
+        <article><span>Confidence</span><strong>{displayScore}%</strong><small>{finding.confidence} correlation · unconfirmed</small></article>
       </div>
 
       <div className="split">
@@ -62,12 +63,12 @@ export default async function CorrelationPage() {
           </div>
         </article>
         <article className="panel">
-          <div className="panel-title"><div><h2>Investigation path</h2><p>Move from symptom to infrastructure evidence</p></div></div>
+          <div className="panel-title"><div><h2>Investigation path</h2><p>Move from user impact to the suspected root dependency</p></div></div>
           <div className="list">
-            <Link className="list-item row-link" href={`/services/${encodeURIComponent(primary.name)}?environment=${encodeURIComponent(primary.environment)}`}><div><strong>1. Affected service</strong><p>Inspect traces, logs, latency and errors for {primary.name}</p></div><span>→</span></Link>
-            <Link className="list-item row-link" href="/traces"><div><strong>2. Trace path</strong><p>Compare failed requests and downstream spans</p></div><span>→</span></Link>
-            <Link className="list-item row-link" href="/kubernetes"><div><strong>3. Kubernetes evidence</strong><p>Inspect pods, deployments, services and events</p></div><span>→</span></Link>
-            <Link className="list-item row-link" href="/incidents"><div><strong>4. Incident command</strong><p>Validate the hypothesis against the incident timeline</p></div><span>→</span></Link>
+            <Link className="list-item row-link" href={`/services/${encodeURIComponent(primary.name)}?environment=${encodeURIComponent(primary.environment)}`}><div><strong>1. Impacted service</strong><p>Inspect traces, logs, latency and errors for {primary.name}</p></div><span>→</span></Link>
+            <Link className="list-item row-link" href="/traces"><div><strong>2. Dependency trace path</strong><p>Follow failed requests from {primary.name}{finding.dependency ? ` to ${finding.dependency}` : " into downstream services"}</p></div><span>→</span></Link>
+            <Link className="list-item row-link" href="/kubernetes"><div><strong>3. Suspected failing workload</strong><p>Validate {finding.workload ?? finding.dependency ?? "the downstream workload"} against Kubernetes deployments, services, pods and events</p></div><span>→</span></Link>
+            <Link className="list-item row-link" href="/incidents"><div><strong>4. Incident command</strong><p>Confirm or reject the suspected root cause against the incident timeline</p></div><span>→</span></Link>
           </div>
         </article>
       </div>
