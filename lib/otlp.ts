@@ -34,6 +34,17 @@ function resourceContext(resource: AnyRecord | undefined) {
   };
 }
 
+function otelStatusIsError(code: unknown) {
+  return code === 2 || code === "2" || code === "STATUS_CODE_ERROR";
+}
+
+function numericHttpStatus(attributes: Record<string, unknown>) {
+  const raw = attributes["http.response.status_code"] ?? attributes["http.status_code"];
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
 function kubernetesEvidence(body: any, context: ReturnType<typeof resourceContext>, log: AnyRecord, scopeName?: string): TelemetryRecord | null {
   if (!body || typeof body !== "object" || !body.kind || !body.metadata) return null;
 
@@ -148,24 +159,25 @@ export function normalizeOtlpTraces(payload: AnyRecord): TelemetryRecord[] {
         const start = Number(span.startTimeUnixNano ?? 0);
         const end = Number(span.endTimeUnixNano ?? start);
         const spanAttributes = attributesToObject(span.attributes);
-        const httpStatus = Number(spanAttributes["http.response.status_code"] ?? spanAttributes["http.status_code"]);
+        const httpStatus = numericHttpStatus(spanAttributes);
         output.push({
           workspace_id: context.workspace,
           signal_type: "trace",
           service_name: context.service,
           environment: context.environment,
-          severity: span.status?.code === 2 || httpStatus >= 500 ? "ERROR" : "INFO",
+          severity: otelStatusIsError(span.status?.code) || (httpStatus !== undefined && httpStatus >= 500) ? "ERROR" : "INFO",
           message: span.name ?? "unnamed span",
           trace_id: span.traceId,
           span_id: span.spanId,
           parent_span_id: span.parentSpanId || undefined,
           duration_ms: Math.max(0, (end - start) / 1_000_000),
-          status_code: Number.isFinite(httpStatus) ? httpStatus : span.status?.code,
+          status_code: httpStatus,
           attributes: {
             ...context.resourceAttributes,
             ...spanAttributes,
             scope: scopeSpans.scope?.name,
             "otel.span.kind": span.kind,
+            "otel.status.code": span.status?.code,
           },
           observed_at: nanosToIso(span.startTimeUnixNano),
         });
