@@ -28,6 +28,29 @@ function attr(record: TelemetryRecord, ...keys: string[]) {
   return undefined;
 }
 
+function downstreamTarget(record: TelemetryRecord) {
+  const explicit = attr(record, "peer.service", "server.address", "net.peer.name", "rpc.service");
+  if (explicit) return explicit.replace(/^https?:\/\//, "").split("/")[0];
+
+  const url = attr(record, "http.url", "url.full");
+  if (url) {
+    try {
+      return new URL(url).host;
+    } catch {
+      return url.replace(/^https?:\/\//, "").split("/")[0];
+    }
+  }
+
+  // http.host is the local inbound host on server spans, so use it only for client spans.
+  const spanKind = Number(attr(record, "otel.span.kind") ?? 0);
+  return spanKind === 3 ? attr(record, "http.host") : undefined;
+}
+
+function serviceNameFromTarget(target?: string) {
+  if (!target) return undefined;
+  return target.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+}
+
 export function correlateIncident(records: TelemetryRecord[], primary?: ServiceSummary): CorrelationFinding | null {
   if (!primary) return null;
   const traces = records.filter((r) => r.signal_type === "trace");
@@ -38,42 +61,64 @@ export function correlateIncident(records: TelemetryRecord[], primary?: ServiceS
 
   const dependencyCounts = new Map<string, number>();
   for (const span of relatedSpans) {
-    if (span.service_name !== primary.name && isFailure(span)) dependencyCounts.set(span.service_name, (dependencyCounts.get(span.service_name) ?? 0) + 1);
-    const peer = attr(span, "peer.service", "server.address", "http.host", "net.peer.name");
-    if (peer && peer !== primary.name && isFailure(span)) dependencyCounts.set(peer, (dependencyCounts.get(peer) ?? 0) + 1);
+    if (!isFailure(span)) continue;
+    if (span.service_name !== primary.name) dependencyCounts.set(span.service_name, (dependencyCounts.get(span.service_name) ?? 0) + 1);
+    const target = downstreamTarget(span);
+    const targetService = serviceNameFromTarget(target);
+    if (targetService && targetService !== primary.name) dependencyCounts.set(targetService, (dependencyCounts.get(targetService) ?? 0) + 1);
   }
   const dependency = [...dependencyCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
 
   const kube = records.filter((r) => r.signal_type === "k8s_event");
   const serviceTerms = [primary.name, dependency].filter(Boolean) as string[];
   const relatedKube = kube.filter((r) => serviceTerms.some((term) => text(r).includes(term.toLowerCase())));
+
+  const dependencyDeployment = dependency ? relatedKube.find((r) =>
+    r.attributes["k8s.kind"] === "Deployment" &&
+    String(r.attributes["k8s.deployment.name"] ?? r.service_name) === dependency
+  ) : undefined;
+  const deploymentReplicas = dependencyDeployment ? Number(dependencyDeployment.attributes["k8s.deployment.replicas"] ?? NaN) : NaN;
+  const deploymentUnavailable = Boolean(dependencyDeployment && Number.isFinite(deploymentReplicas) && deploymentReplicas === 0);
+
   const unhealthyKube = relatedKube.filter((r) => {
     const phase = attr(r, "k8s.pod.phase") ?? "";
     const reason = attr(r, "k8s.pod.reason", "k8s.event.reason") ?? "";
     return r.severity === "ERROR" || phase === "Failed" || phase === "Pending" || /crash|oom|failed|unhealthy|backoff|error/i.test(`${reason} ${r.message}`);
   });
-  const strongestKube = unhealthyKube[0] ?? relatedKube[0];
-  const pod = strongestKube ? attr(strongestKube, "k8s.pod.name", "k8s.object.name") : undefined;
-  const workload = strongestKube ? attr(strongestKube, "k8s.deployment.name", "k8s.workload.name") : undefined;
+
+  const strongestKube = dependencyDeployment ?? unhealthyKube[0] ?? relatedKube[0];
+  const pod = strongestKube ? attr(strongestKube, "k8s.pod.name") : undefined;
+  const workload = dependencyDeployment
+    ? attr(dependencyDeployment, "k8s.deployment.name") ?? dependency
+    : strongestKube ? attr(strongestKube, "k8s.deployment.name", "k8s.workload.name") : undefined;
 
   let score = 20;
   const evidence: string[] = [];
   if (serviceFailures.length) { score += 20; evidence.push(`${serviceFailures.length} failed trace${serviceFailures.length === 1 ? "" : "s"} observed for ${primary.name}.`); }
   if (primary.errorRate >= 2) { score += 10; evidence.push(`${primary.name} error rate is ${primary.errorRate.toFixed(1)}%.`); }
   if (primary.p95 >= 750) { score += 10; evidence.push(`${primary.name} P95 latency is ${Math.round(primary.p95)} ms.`); }
-  if (dependency) { score += 20; evidence.push(`Failed traces correlate with dependency ${dependency}.`); }
-  if (unhealthyKube.length) { score += 20; evidence.push(`${unhealthyKube.length} unhealthy Kubernetes evidence record${unhealthyKube.length === 1 ? "" : "s"} correlate with the affected path.`); }
-  else if (relatedKube.length) evidence.push(`Kubernetes state for the affected path is available, with no unhealthy state currently observed.`);
+  if (dependency) { score += 20; evidence.push(`Failed traces correlate with downstream dependency ${dependency}.`); }
+  if (deploymentUnavailable) {
+    score += 20;
+    evidence.push(`Kubernetes Deployment ${dependency} is currently configured with 0 replicas.`);
+  } else if (unhealthyKube.length) {
+    score += 20;
+    evidence.push(`${unhealthyKube.length} unhealthy Kubernetes evidence record${unhealthyKube.length === 1 ? "" : "s"} correlate with the affected path.`);
+  } else if (relatedKube.length) {
+    evidence.push(`Kubernetes state for the affected path is available, with no unhealthy state currently observed.`);
+  }
   score = Math.min(100, score);
   const confidence = score >= 75 ? "High" : score >= 50 ? "Medium" : "Low";
 
-  const summary = dependency && unhealthyKube.length
-    ? `${primary.name} failures correlate with ${dependency}, with Kubernetes evidence on ${pod ?? workload ?? "the affected workload"}.`
-    : dependency
-      ? `${primary.name} failures correlate most strongly with dependency ${dependency}.`
-      : unhealthyKube.length
-        ? `${primary.name} degradation overlaps Kubernetes instability on ${pod ?? workload ?? "the affected workload"}.`
-        : `${primary.name} is degraded, but the current sample does not yet prove a downstream or Kubernetes root cause.`;
+  const summary = dependency && deploymentUnavailable
+    ? `${primary.name} failures correlate with downstream dependency ${dependency}; Kubernetes shows deployment ${dependency} at 0 replicas.`
+    : dependency && unhealthyKube.length
+      ? `${primary.name} failures correlate with downstream dependency ${dependency}, with Kubernetes evidence on ${pod ?? workload ?? "the affected workload"}.`
+      : dependency
+        ? `${primary.name} failures correlate most strongly with downstream dependency ${dependency}.`
+        : unhealthyKube.length
+          ? `${primary.name} degradation overlaps Kubernetes instability on ${pod ?? workload ?? "the affected workload"}.`
+          : `${primary.name} is degraded, but the current sample does not yet prove a downstream or Kubernetes root cause.`;
 
   return { score, confidence, affectedService: primary.name, dependency, pod, workload, summary, evidence };
 }
