@@ -68,7 +68,16 @@ export async function ensureIncident(input: Pick<IncidentRecord, "workspace_id" 
     incident.environment === normalizedInput.environment &&
     incident.status !== "resolved",
   );
-  if (existing) return existing;
+  if (existing) {
+    if (existing.title !== normalizedInput.title || existing.summary !== normalizedInput.summary || existing.severity !== normalizedInput.severity) {
+      return updateIncident(existing.id, {
+        title: normalizedInput.title,
+        summary: normalizedInput.summary,
+        severity: normalizedInput.severity,
+      }, normalizedInput.workspace_id);
+    }
+    return existing;
+  }
 
   const now = new Date().toISOString();
   const incident: IncidentRecord = {
@@ -99,7 +108,7 @@ export async function ensureIncident(input: Pick<IncidentRecord, "workspace_id" 
   return ((await response.json()) as IncidentRecord[])[0];
 }
 
-export async function updateIncident(id: string, patch: Partial<Pick<IncidentRecord, "status" | "owner" | "severity" | "summary" | "notes">>, requestedWorkspace?: string) {
+export async function updateIncident(id: string, patch: Partial<Pick<IncidentRecord, "title" | "status" | "owner" | "severity" | "summary" | "notes">>, requestedWorkspace?: string) {
   const current = await getIncident(id, requestedWorkspace);
   if (!current) throw new Error("Incident not found");
   const now = new Date().toISOString();
