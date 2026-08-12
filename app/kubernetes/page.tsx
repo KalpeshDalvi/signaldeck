@@ -1,5 +1,6 @@
 import { PageHeader } from "@/components/AppShell";
 import { readTelemetry } from "@/lib/telemetry";
+import { formatCentralTime } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
@@ -30,18 +31,9 @@ function portsLabel(value: unknown) {
 
 export default async function Kubernetes() {
   const records = await readTelemetry(500, "k8s_event");
-  const pods = latestBy(
-    records.filter((record) => record.attributes["k8s.kind"] === "Pod"),
-    (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.pod.name"] ?? record.attributes["k8s.object.name"]}`,
-  );
-  const deployments = latestBy(
-    records.filter((record) => record.attributes["k8s.kind"] === "Deployment"),
-    (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.deployment.name"]}`,
-  );
-  const services = latestBy(
-    records.filter((record) => record.attributes["k8s.kind"] === "Service"),
-    (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.service.name"] ?? record.attributes["k8s.object.name"]}`,
-  );
+  const pods = latestBy(records.filter((record) => record.attributes["k8s.kind"] === "Pod"), (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.pod.name"] ?? record.attributes["k8s.object.name"]}`);
+  const deployments = latestBy(records.filter((record) => record.attributes["k8s.kind"] === "Deployment"), (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.deployment.name"]}`);
+  const services = latestBy(records.filter((record) => record.attributes["k8s.kind"] === "Service"), (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.service.name"] ?? record.attributes["k8s.object.name"]}`);
   const events = records.filter((record) => record.attributes["k8s.kind"] === "Event").slice(0, 30);
   const warningEvents = events.filter((record) => record.severity === "ERROR");
   const restartCount = pods.reduce((sum, record) => sum + num(record.attributes["k8s.pod.restart_count"]), 0);
@@ -56,75 +48,13 @@ export default async function Kubernetes() {
   const namespaces = [...new Set([...pods, ...deployments, ...services].map((record) => String(record.attributes["k8s.namespace.name"] ?? "unknown")))].sort();
 
   return <>
-    <PageHeader eyebrow="GKE EVIDENCE" title="Kubernetes" description="Live cluster topology, workload state, Services, and Kubernetes events collected as incident evidence.">
-      <span className={`pill ${records.length ? "healthy" : "warning"}`}>{clusterName}</span>
-    </PageHeader>
-
-    <article className="panel cluster-overview">
-      <div className="panel-title"><div><h2>Connected cluster</h2><p>Cluster identity derived from the live OpenTelemetry resource context</p></div></div>
-      <div className="cluster-facts">
-        <div><span>Cluster</span><strong>{clusterName}</strong></div>
-        <div><span>Provider</span><strong>{provider}</strong></div>
-        <div><span>Environment</span><strong>{environment}</strong></div>
-        <div><span>Namespaces</span><strong>{namespaces.length ? namespaces.join(", ") : "—"}</strong></div>
-      </div>
-    </article>
-
-    <div className="metrics">
-      <article><span>Pods observed</span><strong>{pods.length}</strong><small>{unstablePods.length ? `${unstablePods.length} unstable` : "all observed pods stable"}</small></article>
-      <article><span>Deployments</span><strong>{deployments.length}</strong><small>latest observed state</small></article>
-      <article><span>Services</span><strong>{services.length}</strong><small>live Kubernetes Service objects</small></article>
-      <article><span>Restarts</span><strong>{restartCount}</strong><small className={restartCount ? "bad" : ""}>across observed pods</small></article>
-      <article><span>Warning events</span><strong>{warningEvents.length}</strong><small className={warningEvents.length ? "bad" : ""}>recent evidence</small></article>
-    </div>
-
+    <PageHeader eyebrow="GKE EVIDENCE" title="Kubernetes" description="Live cluster topology, workload state, Services, and Kubernetes events collected as incident evidence."><span className={`pill ${records.length ? "healthy" : "warning"}`}>{clusterName}</span></PageHeader>
+    <article className="panel cluster-overview"><div className="panel-title"><div><h2>Connected cluster</h2><p>Cluster identity derived from the live OpenTelemetry resource context</p></div></div><div className="cluster-facts"><div><span>Cluster</span><strong>{clusterName}</strong></div><div><span>Provider</span><strong>{provider}</strong></div><div><span>Environment</span><strong>{environment}</strong></div><div><span>Namespaces</span><strong>{namespaces.length ? namespaces.join(", ") : "—"}</strong></div></div></article>
+    <div className="metrics"><article><span>Pods observed</span><strong>{pods.length}</strong><small>{unstablePods.length ? `${unstablePods.length} unstable` : "all observed pods stable"}</small></article><article><span>Deployments</span><strong>{deployments.length}</strong><small>latest observed state</small></article><article><span>Services</span><strong>{services.length}</strong><small>live Kubernetes Service objects</small></article><article><span>Restarts</span><strong>{restartCount}</strong><small className={restartCount ? "bad" : ""}>across observed pods</small></article><article><span>Warning events</span><strong>{warningEvents.length}</strong><small className={warningEvents.length ? "bad" : ""}>recent evidence</small></article></div>
     {records.length ? <>
-      <article className="panel">
-        <div className="panel-title"><div><h2>Workload state</h2><p>Latest pod state received from the cluster · click a pod to inspect events and topology</p></div></div>
-        <div className="table">
-          <div className="row kube-row heading"><span>Pod</span><span>Namespace</span><span>Status</span><span>Restarts</span><span>Reason</span></div>
-          {pods.map((pod) => {
-            const name = String(pod.attributes["k8s.pod.name"] ?? pod.attributes["k8s.object.name"] ?? "unknown");
-            const namespace = String(pod.attributes["k8s.namespace.name"] ?? "unknown");
-            const phase = String(pod.attributes["k8s.pod.phase"] ?? "Unknown");
-            const reason = String(pod.attributes["k8s.pod.reason"] ?? "—");
-            const unhealthy = phase !== "Running" || ["CrashLoopBackOff", "OOMKilled", "Error"].includes(reason);
-            return <a className="row kube-row row-link" href={`/kubernetes/pods/${encodeURIComponent(name)}?namespace=${encodeURIComponent(namespace)}`} key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span className={unhealthy ? "bad-text" : "good-text"}>{phase}</span><span>{num(pod.attributes["k8s.pod.restart_count"])}</span><span>{reason}</span></a>;
-          })}
-        </div>
-      </article>
-
-      <article className="panel">
-        <div className="panel-title"><div><h2>Kubernetes Services</h2><p>Actual Service objects discovered from {clusterName}</p></div></div>
-        {services.length ? <div className="table">
-          <div className="row kube-service-row heading"><span>Service</span><span>Namespace</span><span>Type</span><span>Cluster IP</span><span>Ports</span></div>
-          {services.map((service) => {
-            const name = String(service.attributes["k8s.service.name"] ?? service.attributes["k8s.object.name"] ?? service.service_name);
-            const namespace = String(service.attributes["k8s.namespace.name"] ?? "unknown");
-            return <div className="row kube-service-row" key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span>{String(service.attributes["k8s.service.type"] ?? "ClusterIP")}</span><code>{String(service.attributes["k8s.service.cluster_ip"] ?? "—")}</code><span>{portsLabel(service.attributes["k8s.service.ports"])}</span></div>;
-          })}
-        </div> : <div className="empty-state"><p>No Kubernetes Service objects received yet. Apply the updated collector configuration and restart the collector.</p></div>}
-      </article>
-
-      <div className="split">
-        <article className="panel">
-          <div className="panel-title"><div><h2>Deployments</h2><p>Observed desired versus ready replicas</p></div></div>
-          <div className="list">
-            {deployments.map((deployment) => {
-              const desired = num(deployment.attributes["k8s.deployment.replicas"]);
-              const ready = num(deployment.attributes["k8s.deployment.ready_replicas"]);
-              return <div className="list-item" key={String(deployment.attributes["k8s.deployment.name"])}><div><strong>{String(deployment.attributes["k8s.deployment.name"] ?? deployment.service_name)}</strong><p>{String(deployment.attributes["k8s.namespace.name"] ?? deployment.environment)}</p></div><div><b className={ready < desired ? "bad-text" : "good-text"}>{ready}/{desired}</b><span>ready</span></div></div>;
-            })}
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel-title"><div><h2>Recent Kubernetes events</h2><p>Warnings, scheduling, readiness, image and rollout evidence</p></div></div>
-          <div className="list">
-            {events.length ? events.map((event, index) => <div className="list-item" key={event.id ?? `${event.observed_at}-${index}`}><div><strong className={event.severity === "ERROR" ? "bad-text" : ""}>{event.message}</strong><p>{String(event.attributes["k8s.namespace.name"] ?? "cluster")} · {String(event.attributes["k8s.object.kind"] ?? "object")}/{String(event.attributes["k8s.object.name"] ?? event.service_name)}</p></div><div><span>{new Date(event.observed_at).toLocaleTimeString()}</span></div></div>) : <div className="empty-state"><p>No Kubernetes Event objects received yet.</p></div>}
-          </div>
-        </article>
-      </div>
+      <article className="panel"><div className="panel-title"><div><h2>Workload state</h2><p>Latest pod state received from the cluster · click a pod to inspect events and topology</p></div></div><div className="table"><div className="row kube-row heading"><span>Pod</span><span>Namespace</span><span>Status</span><span>Restarts</span><span>Reason</span></div>{pods.map((pod) => { const name = String(pod.attributes["k8s.pod.name"] ?? pod.attributes["k8s.object.name"] ?? "unknown"); const namespace = String(pod.attributes["k8s.namespace.name"] ?? "unknown"); const phase = String(pod.attributes["k8s.pod.phase"] ?? "Unknown"); const reason = String(pod.attributes["k8s.pod.reason"] ?? "—"); const unhealthy = phase !== "Running" || ["CrashLoopBackOff", "OOMKilled", "Error"].includes(reason); return <a className="row kube-row row-link" href={`/kubernetes/pods/${encodeURIComponent(name)}?namespace=${encodeURIComponent(namespace)}`} key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span className={unhealthy ? "bad-text" : "good-text"}>{phase}</span><span>{num(pod.attributes["k8s.pod.restart_count"])}</span><span>{reason}</span></a>; })}</div></article>
+      <article className="panel"><div className="panel-title"><div><h2>Kubernetes Services</h2><p>Actual Service objects discovered from {clusterName}</p></div></div>{services.length ? <div className="table"><div className="row kube-service-row heading"><span>Service</span><span>Namespace</span><span>Type</span><span>Cluster IP</span><span>Ports</span></div>{services.map((service) => { const name = String(service.attributes["k8s.service.name"] ?? service.attributes["k8s.object.name"] ?? service.service_name); const namespace = String(service.attributes["k8s.namespace.name"] ?? "unknown"); return <div className="row kube-service-row" key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span>{String(service.attributes["k8s.service.type"] ?? "ClusterIP")}</span><code>{String(service.attributes["k8s.service.cluster_ip"] ?? "—")}</code><span>{portsLabel(service.attributes["k8s.service.ports"])}</span></div>; })}</div> : <div className="empty-state"><p>No Kubernetes Service objects received yet.</p></div>}</article>
+      <div className="split"><article className="panel"><div className="panel-title"><div><h2>Deployments</h2><p>Observed desired versus ready replicas</p></div></div><div className="list">{deployments.map((deployment) => { const desired = num(deployment.attributes["k8s.deployment.replicas"]); const ready = num(deployment.attributes["k8s.deployment.ready_replicas"]); return <div className="list-item" key={String(deployment.attributes["k8s.deployment.name"])}><div><strong>{String(deployment.attributes["k8s.deployment.name"] ?? deployment.service_name)}</strong><p>{String(deployment.attributes["k8s.namespace.name"] ?? deployment.environment)}</p></div><div><b className={ready < desired ? "bad-text" : "good-text"}>{ready}/{desired}</b><span>ready</span></div></div>; })}</div></article><article className="panel"><div className="panel-title"><div><h2>Recent Kubernetes events</h2><p>Warnings, scheduling, readiness, image and rollout evidence · US Central Time</p></div></div><div className="list">{events.length ? events.map((event, index) => <div className="list-item" key={event.id ?? `${event.observed_at}-${index}`}><div><strong className={event.severity === "ERROR" ? "bad-text" : ""}>{event.message}</strong><p>{String(event.attributes["k8s.namespace.name"] ?? "cluster")} · {String(event.attributes["k8s.object.kind"] ?? "object")}/{String(event.attributes["k8s.object.name"] ?? event.service_name)}</p></div><div><span>{formatCentralTime(event.observed_at)}</span></div></div>) : <div className="empty-state"><p>No Kubernetes Event objects received yet.</p></div>}</div></article></div>
     </> : <article className="panel empty-state"><h2>No live Kubernetes evidence yet</h2><p>Deploy the Incident Lab collector to a GKE cluster. Pod, deployment, Service, and event state will appear here automatically.</p></article>}
   </>;
 }
