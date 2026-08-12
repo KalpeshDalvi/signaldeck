@@ -19,6 +19,15 @@ function num(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function portsLabel(value: unknown) {
+  if (!Array.isArray(value)) return "—";
+  return value.map((port) => {
+    if (!port || typeof port !== "object") return String(port);
+    const item = port as Record<string, unknown>;
+    return `${String(item.port ?? "?")}/${String(item.protocol ?? "TCP")}`;
+  }).join(", ") || "—";
+}
+
 export default async function Kubernetes() {
   const records = await readTelemetry(500, "k8s_event");
   const pods = latestBy(
@@ -29,6 +38,10 @@ export default async function Kubernetes() {
     records.filter((record) => record.attributes["k8s.kind"] === "Deployment"),
     (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.deployment.name"]}`,
   );
+  const services = latestBy(
+    records.filter((record) => record.attributes["k8s.kind"] === "Service"),
+    (record) => `${record.attributes["k8s.namespace.name"]}/${record.attributes["k8s.service.name"] ?? record.attributes["k8s.object.name"]}`,
+  );
   const events = records.filter((record) => record.attributes["k8s.kind"] === "Event").slice(0, 30);
   const warningEvents = events.filter((record) => record.severity === "ERROR");
   const restartCount = pods.reduce((sum, record) => sum + num(record.attributes["k8s.pod.restart_count"]), 0);
@@ -38,18 +51,31 @@ export default async function Kubernetes() {
     return phase !== "Running" || ["CrashLoopBackOff", "OOMKilled", "Error"].includes(reason);
   });
   const clusterName = String(records[0]?.attributes["k8s.cluster.name"] ?? "No cluster connected");
+  const provider = String(records[0]?.attributes["cloud.provider"] ?? "unknown").toUpperCase();
+  const environment = String(records[0]?.environment ?? "unknown");
+  const namespaces = [...new Set([...pods, ...deployments, ...services].map((record) => String(record.attributes["k8s.namespace.name"] ?? "unknown")))].sort();
 
   return <>
-    <PageHeader eyebrow="GKE EVIDENCE" title="Kubernetes" description="Live workload state and Kubernetes events collected as incident evidence.">
+    <PageHeader eyebrow="GKE EVIDENCE" title="Kubernetes" description="Live cluster topology, workload state, Services, and Kubernetes events collected as incident evidence.">
       <span className={`pill ${records.length ? "healthy" : "warning"}`}>{clusterName}</span>
     </PageHeader>
+
+    <article className="panel cluster-overview">
+      <div className="panel-title"><div><h2>Connected cluster</h2><p>Cluster identity derived from the live OpenTelemetry resource context</p></div></div>
+      <div className="cluster-facts">
+        <div><span>Cluster</span><strong>{clusterName}</strong></div>
+        <div><span>Provider</span><strong>{provider}</strong></div>
+        <div><span>Environment</span><strong>{environment}</strong></div>
+        <div><span>Namespaces</span><strong>{namespaces.length ? namespaces.join(", ") : "—"}</strong></div>
+      </div>
+    </article>
 
     <div className="metrics">
       <article><span>Pods observed</span><strong>{pods.length}</strong><small>{unstablePods.length ? `${unstablePods.length} unstable` : "all observed pods stable"}</small></article>
       <article><span>Deployments</span><strong>{deployments.length}</strong><small>latest observed state</small></article>
+      <article><span>Services</span><strong>{services.length}</strong><small>live Kubernetes Service objects</small></article>
       <article><span>Restarts</span><strong>{restartCount}</strong><small className={restartCount ? "bad" : ""}>across observed pods</small></article>
       <article><span>Warning events</span><strong>{warningEvents.length}</strong><small className={warningEvents.length ? "bad" : ""}>recent evidence</small></article>
-      <article><span>Evidence records</span><strong>{records.length}</strong><small>latest 500</small></article>
     </div>
 
     {records.length ? <>
@@ -66,6 +92,18 @@ export default async function Kubernetes() {
             return <div className="row kube-row" key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span className={unhealthy ? "bad-text" : "good-text"}>{phase}</span><span>{num(pod.attributes["k8s.pod.restart_count"])}</span><span>{reason}</span></div>;
           })}
         </div>
+      </article>
+
+      <article className="panel">
+        <div className="panel-title"><div><h2>Kubernetes Services</h2><p>Actual Service objects discovered from {clusterName}</p></div></div>
+        {services.length ? <div className="table">
+          <div className="row kube-service-row heading"><span>Service</span><span>Namespace</span><span>Type</span><span>Cluster IP</span><span>Ports</span></div>
+          {services.map((service) => {
+            const name = String(service.attributes["k8s.service.name"] ?? service.attributes["k8s.object.name"] ?? service.service_name);
+            const namespace = String(service.attributes["k8s.namespace.name"] ?? "unknown");
+            return <div className="row kube-service-row" key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span>{String(service.attributes["k8s.service.type"] ?? "ClusterIP")}</span><code>{String(service.attributes["k8s.service.cluster_ip"] ?? "—")}</code><span>{portsLabel(service.attributes["k8s.service.ports"])}</span></div>;
+          })}
+        </div> : <div className="empty-state"><p>No Kubernetes Service objects received yet. Apply the updated collector configuration and restart the collector.</p></div>}
       </article>
 
       <div className="split">
@@ -87,6 +125,6 @@ export default async function Kubernetes() {
           </div>
         </article>
       </div>
-    </> : <article className="panel empty-state"><h2>No live Kubernetes evidence yet</h2><p>Deploy the Incident Lab collector to a GKE cluster. Pod, deployment, and event state will appear here automatically.</p></article>}
+    </> : <article className="panel empty-state"><h2>No live Kubernetes evidence yet</h2><p>Deploy the Incident Lab collector to a GKE cluster. Pod, deployment, Service, and event state will appear here automatically.</p></article>}
   </>;
 }
