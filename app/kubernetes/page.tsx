@@ -80,7 +80,7 @@ export default async function Kubernetes() {
 
     {records.length ? <>
       <article className="panel">
-        <div className="panel-title"><div><h2>Workload state</h2><p>Latest pod state received from the cluster</p></div></div>
+        <div className="panel-title"><div><h2>Workload state</h2><p>Latest pod state received from the cluster · click a pod to inspect events and topology</p></div></div>
         <div className="table">
           <div className="row kube-row heading"><span>Pod</span><span>Namespace</span><span>Status</span><span>Restarts</span><span>Reason</span></div>
           {pods.map((pod) => {
@@ -89,7 +89,7 @@ export default async function Kubernetes() {
             const phase = String(pod.attributes["k8s.pod.phase"] ?? "Unknown");
             const reason = String(pod.attributes["k8s.pod.reason"] ?? "—");
             const unhealthy = phase !== "Running" || ["CrashLoopBackOff", "OOMKilled", "Error"].includes(reason);
-            return <div className="row kube-row" key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span className={unhealthy ? "bad-text" : "good-text"}>{phase}</span><span>{num(pod.attributes["k8s.pod.restart_count"])}</span><span>{reason}</span></div>;
+            return <a className="row kube-row row-link" href={`/kubernetes/pods/${encodeURIComponent(name)}?namespace=${encodeURIComponent(namespace)}`} key={`${namespace}/${name}`}><strong>{name}</strong><span>{namespace}</span><span className={unhealthy ? "bad-text" : "good-text"}>{phase}</span><span>{num(pod.attributes["k8s.pod.restart_count"])}</span><span>{reason}</span></a>;
           })}
         </div>
       </article>
