@@ -61,11 +61,15 @@ data:
           - name: pods
             mode: watch
             namespaces: [signaldeck-lab]
+          # Pull current state so unchanged/scaled-to-zero objects are still
+          # emitted after collector restarts. Watch-only mode can miss them.
           - name: services
-            mode: watch
+            mode: pull
+            interval: 15s
             namespaces: [signaldeck-lab]
           - name: deployments
-            mode: watch
+            mode: pull
+            interval: 15s
             group: apps
             namespaces: [signaldeck-lab]
 
