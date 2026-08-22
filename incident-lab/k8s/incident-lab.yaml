@@ -171,6 +171,91 @@ spec:
     - port: 8080
       targetPort: 8080
 ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: signaldeck-lab
+  labels:
+    app.kubernetes.io/name: payments
+    app.kubernetes.io/part-of: signaldeck-incident-lab
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments
+        app.kubernetes.io/name: payments
+        app.kubernetes.io/part-of: signaldeck-incident-lab
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: payments
+          image: REGION-docker.pkg.dev/PROJECT_ID/signaldeck-lab/inventory:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: payments
+            - name: FAILURE_MODE
+              value: none
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://signaldeck-collector.signaldeck-system.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: deployment.environment=lab,service.namespace=signaldeck-lab
+            - name: TMPDIR
+              value: /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+  namespace: signaldeck-lab
+spec:
+  selector:
+    app: payments
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -212,6 +297,25 @@ spec:
   ingress:
     - from:
         - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traffic-generator-to-payments
+  namespace: signaldeck-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: payments
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: traffic-generator-payments
       ports:
         - protocol: TCP
           port: 8080
