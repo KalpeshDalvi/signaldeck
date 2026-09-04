@@ -8,10 +8,36 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Run-Gcloud {
-  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-  & gcloud.cmd @Args
-  if ($LASTEXITCODE -ne 0) { throw "gcloud.cmd failed: $($Args -join ' ')" }
+function Invoke-Gcloud {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$CommandArgs,
+    [switch]$Capture
+  )
+
+  # Windows PowerShell can surface normal gcloud stderr messages as
+  # NativeCommandError when ErrorActionPreference is Stop. Temporarily
+  # allow native stderr and use LASTEXITCODE as the source of truth.
+  $oldPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    if ($Capture) {
+      $output = & gcloud.cmd @CommandArgs 2>&1
+      $exitCode = $LASTEXITCODE
+      if ($exitCode -ne 0) {
+        throw "gcloud.cmd failed ($exitCode): $($CommandArgs -join ' ')`n$($output -join [Environment]::NewLine)"
+      }
+      return $output
+    }
+
+    & gcloud.cmd @CommandArgs 2>&1 | ForEach-Object { Write-Host $_ }
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+      throw "gcloud.cmd failed ($exitCode): $($CommandArgs -join ' ')"
+    }
+  }
+  finally {
+    $ErrorActionPreference = $oldPreference
+  }
 }
 
 function Get-DeploymentState {
@@ -31,11 +57,10 @@ function Get-DeploymentState {
 Write-Host "SignalDeck lab shutdown starting..."
 Write-Host "Project: $Project | Cluster: $Cluster | Region: $Region"
 
-Run-Gcloud container clusters get-credentials $Cluster --region $Region --project $Project
+Invoke-Gcloud -CommandArgs @("container", "clusters", "get-credentials", $Cluster, "--region", $Region, "--project", $Project)
 
-$nodePoolsJson = & gcloud.cmd container node-pools list --cluster $Cluster --region $Region --project $Project --format=json
-if ($LASTEXITCODE -ne 0) { throw "Unable to list GKE node pools." }
-$nodePools = $nodePoolsJson | ConvertFrom-Json
+$nodePoolsJson = Invoke-Gcloud -Capture -CommandArgs @("container", "node-pools", "list", "--cluster", $Cluster, "--region", $Region, "--project", $Project, "--format=json")
+$nodePools = ($nodePoolsJson -join [Environment]::NewLine) | ConvertFrom-Json
 
 $state = [ordered]@{
   project = $Project
@@ -49,10 +74,10 @@ $state = [ordered]@{
 
 foreach ($pool in $nodePools) {
   $poolName = $pool.name
-  $sizeText = & gcloud.cmd container node-pools describe $poolName --cluster $Cluster --region $Region --project $Project --format="value(initialNodeCount)"
-  if ($LASTEXITCODE -ne 0) { throw "Unable to read size for node pool $poolName." }
+  $sizeText = Invoke-Gcloud -Capture -CommandArgs @("container", "node-pools", "describe", $poolName, "--cluster", $Cluster, "--region", $Region, "--project", $Project, "--format=value(initialNodeCount)")
   $size = 1
-  if ([int]::TryParse(($sizeText | Select-Object -First 1), [ref]$size) -eq $false) { $size = 1 }
+  $firstSize = (($sizeText | Select-Object -First 1).ToString()).Trim()
+  if ([int]::TryParse($firstSize, [ref]$size) -eq $false) { $size = 1 }
   if ($size -lt 1) { $size = 1 }
   $state.nodePools += [ordered]@{ name = $poolName; numNodes = $size }
 }
@@ -66,16 +91,19 @@ Write-Host "Saved restore state to $StateFile"
 Write-Host "Stopping SignalDeck workloads and telemetry..."
 foreach ($deployment in $state.deployments) {
   kubectl -n $deployment.namespace scale deployment/$($deployment.name) --replicas=0 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Could not scale deployment $($deployment.namespace)/$($deployment.name) to zero."
+  }
 }
 
 foreach ($pool in $nodePools) {
   Write-Host "Scaling node pool '$($pool.name)' to 0..."
-  Run-Gcloud container clusters resize $Cluster --node-pool $pool.name --num-nodes 0 --region $Region --project $Project --quiet
+  Invoke-Gcloud -CommandArgs @("container", "clusters", "resize", $Cluster, "--node-pool", $pool.name, "--num-nodes", "0", "--region", $Region, "--project", $Project, "--quiet")
 }
 
 if ($CloudSqlInstance) {
   Write-Host "Stopping Cloud SQL instance '$CloudSqlInstance'..."
-  Run-Gcloud sql instances patch $CloudSqlInstance --activation-policy=NEVER --project $Project --quiet
+  Invoke-Gcloud -CommandArgs @("sql", "instances", "patch", $CloudSqlInstance, "--activation-policy=NEVER", "--project", $Project, "--quiet")
 } else {
   Write-Host "Cloud SQL instance not specified; skipping Cloud SQL stop."
 }
