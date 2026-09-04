@@ -58,8 +58,6 @@ data:
             mode: watch
             group: events.k8s.io
             namespaces: [signaldeck-lab]
-          # Poll current object state so healthy/unchanged objects do not
-          # disappear from SignalDeck's recent telemetry window.
           - name: pods
             mode: pull
             interval: 15s
@@ -99,7 +97,7 @@ data:
 
     exporters:
       otlphttp/signaldeck:
-        endpoint: https://signaldeck-mauve.vercel.app/api/otel
+        endpoint: ${env:SIGNALDECK_OTLP_ENDPOINT}
         encoding: json
         compression: none
         headers:
@@ -160,6 +158,8 @@ spec:
                 secretKeyRef:
                   name: signaldeck-ingestion
                   key: ingestion-key
+            - name: SIGNALDECK_OTLP_ENDPOINT
+              value: https://signaldeck-mauve.vercel.app/api/otel
           ports:
             - name: otlp-grpc
               containerPort: 4317
