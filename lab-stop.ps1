@@ -14,18 +14,25 @@ function Run-Gcloud {
   if ($LASTEXITCODE -ne 0) { throw "gcloud.cmd failed: $($Args -join ' ')" }
 }
 
+function Get-DeploymentState {
+  param([string]$Namespace)
+  $json = kubectl -n $Namespace get deployment -o json 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $json) { return @() }
+  $obj = $json | ConvertFrom-Json
+  return @($obj.items | ForEach-Object {
+    [ordered]@{
+      namespace = $Namespace
+      name = $_.metadata.name
+      replicas = if ($null -eq $_.spec.replicas) { 1 } else { [int]$_.spec.replicas }
+    }
+  })
+}
+
 Write-Host "SignalDeck lab shutdown starting..."
 Write-Host "Project: $Project | Cluster: $Cluster | Region: $Region"
 
-# Make sure kubectl is pointed at the intended cluster before touching workloads.
 Run-Gcloud container clusters get-credentials $Cluster --region $Region --project $Project
 
-# Stop telemetry first so no new data is generated while infrastructure is shutting down.
-Write-Host "Stopping SignalDeck telemetry collector and demo traffic..."
-kubectl -n signaldeck-system scale deployment/signaldeck-collector --replicas=0 2>$null
-kubectl -n signaldeck-lab scale deployment --all --replicas=0 2>$null
-
-# Capture the current node-pool sizes so lab-start.ps1 can restore them later.
 $nodePoolsJson = & gcloud.cmd container node-pools list --cluster $Cluster --region $Region --project $Project --format=json
 if ($LASTEXITCODE -ne 0) { throw "Unable to list GKE node pools." }
 $nodePools = $nodePoolsJson | ConvertFrom-Json
@@ -36,28 +43,36 @@ $state = [ordered]@{
   region = $Region
   stoppedAt = (Get-Date).ToString("o")
   nodePools = @()
+  deployments = @()
   cloudSqlInstance = $CloudSqlInstance
 }
 
 foreach ($pool in $nodePools) {
   $poolName = $pool.name
-  $sizeText = & gcloud.cmd container clusters describe $Cluster --region $Region --project $Project --format="value(nodePools[?name='$poolName'].initialNodeCount)"
+  $sizeText = & gcloud.cmd container node-pools describe $poolName --cluster $Cluster --region $Region --project $Project --format="value(initialNodeCount)"
   if ($LASTEXITCODE -ne 0) { throw "Unable to read size for node pool $poolName." }
   $size = 1
   if ([int]::TryParse(($sizeText | Select-Object -First 1), [ref]$size) -eq $false) { $size = 1 }
+  if ($size -lt 1) { $size = 1 }
   $state.nodePools += [ordered]@{ name = $poolName; numNodes = $size }
 }
 
-$state | ConvertTo-Json -Depth 5 | Set-Content -Path $StateFile -Encoding UTF8
+$state.deployments += Get-DeploymentState -Namespace "signaldeck-system"
+$state.deployments += Get-DeploymentState -Namespace "signaldeck-lab"
+
+$state | ConvertTo-Json -Depth 6 | Set-Content -Path $StateFile -Encoding UTF8
 Write-Host "Saved restore state to $StateFile"
 
-# Scale every node pool to zero. This stops the worker VM compute charges.
+Write-Host "Stopping SignalDeck workloads and telemetry..."
+foreach ($deployment in $state.deployments) {
+  kubectl -n $deployment.namespace scale deployment/$($deployment.name) --replicas=0 2>$null
+}
+
 foreach ($pool in $nodePools) {
   Write-Host "Scaling node pool '$($pool.name)' to 0..."
   Run-Gcloud container clusters resize $Cluster --node-pool $pool.name --num-nodes 0 --region $Region --project $Project --quiet
 }
 
-# Cloud SQL is optional until the migration is created. When supplied, stop its compute.
 if ($CloudSqlInstance) {
   Write-Host "Stopping Cloud SQL instance '$CloudSqlInstance'..."
   Run-Gcloud sql instances patch $CloudSqlInstance --activation-policy=NEVER --project $Project --quiet
