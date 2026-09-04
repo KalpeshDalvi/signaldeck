@@ -35,40 +35,18 @@ function supabaseConfig() {
 
 export async function saveTelemetry(records: TelemetryRecord[]) {
   const normalized = records.map((record) => ({
-    workspace_id: workspaceId(record.workspace_id),
-    signal_type: record.signal_type,
-    service_name: record.service_name,
-    environment: record.environment,
-    severity: record.severity ?? null,
-    message: record.message,
-    trace_id: record.trace_id ?? null,
-    span_id: record.span_id ?? null,
-    parent_span_id: record.parent_span_id ?? null,
-    duration_ms: record.duration_ms ?? null,
-    status_code: record.status_code ?? null,
-    attributes: record.attributes ?? {},
-    observed_at: record.observed_at,
+    workspace_id: workspaceId(record.workspace_id), signal_type: record.signal_type, service_name: record.service_name,
+    environment: record.environment, severity: record.severity ?? null, message: record.message,
+    trace_id: record.trace_id ?? null, span_id: record.span_id ?? null, parent_span_id: record.parent_span_id ?? null,
+    duration_ms: record.duration_ms ?? null, status_code: record.status_code ?? null, attributes: record.attributes ?? {}, observed_at: record.observed_at,
   }));
   const config = supabaseConfig();
-
-  if (!config) {
-    memoryStore.unshift(...(normalized as TelemetryRecord[]));
-    memoryStore.splice(5000);
-    return { backend: "memory", accepted: normalized.length };
-  }
-
+  if (!config) { memoryStore.unshift(...(normalized as TelemetryRecord[])); memoryStore.splice(5000); return { backend: "memory", accepted: normalized.length }; }
   const response = await fetch(`${config.url}/rest/v1/telemetry_events`, {
     method: "POST",
-    headers: {
-      apikey: config.key,
-      Authorization: `Bearer ${config.key}`,
-      "Content-Type": "application/json",
-      Prefer: "return=minimal",
-    },
-    body: JSON.stringify(normalized),
-    cache: "no-store",
+    headers: { apikey: config.key, Authorization: `Bearer ${config.key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(normalized), cache: "no-store",
   });
-
   if (!response.ok) throw new Error(`Supabase insert failed: ${response.status} ${await response.text()}`);
   return { backend: "supabase", accepted: normalized.length };
 }
@@ -77,23 +55,18 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const selectedWorkspace = workspaceId(requestedWorkspace);
   const config = supabaseConfig();
-
   if (!config) {
-    const records = memoryStore.filter((record) =>
-      record.workspace_id === selectedWorkspace && (!signalType || record.signal_type === signalType),
-    );
+    const records = memoryStore.filter((record) => record.workspace_id === selectedWorkspace && (!signalType || record.signal_type === signalType));
     return records.slice(0, safeLimit);
   }
-
   const signalFilter = signalType ? `&signal_type=eq.${encodeURIComponent(signalType)}` : "";
   const response = await fetch(
     `${config.url}/rest/v1/telemetry_events?select=*&workspace_id=eq.${encodeURIComponent(selectedWorkspace)}&order=observed_at.desc&limit=${safeLimit}${signalFilter}`,
     {
       headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
-      cache: "no-store",
+      next: { revalidate: 10 },
     },
   );
-
   if (!response.ok) throw new Error(`Supabase query failed: ${response.status} ${await response.text()}`);
   return (await response.json()) as TelemetryRecord[];
 }
