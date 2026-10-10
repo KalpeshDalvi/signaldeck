@@ -4,11 +4,17 @@ import pg from "pg";
 
 const PORT = Number(process.env.PORT || 8080);
 const DATABASE_URL = process.env.DATABASE_URL;
-const pool = new pg.Pool({connectionString:DATABASE_URL, max:3, idleTimeoutMillis:30000, connectionTimeoutMillis:5000, statement_timeout:10000});
+const PGHOST = process.env.PGHOST;
+const PGDATABASE = process.env.PGDATABASE;
+const PGUSER = process.env.PGUSER;
+const PGPASSWORD = process.env.PGPASSWORD;
+const WORKSPACE_ID = process.env.SIGNALDECK_WORKSPACE_ID || "default";
+const dbConfig = DATABASE_URL ? {connectionString:DATABASE_URL} : {host:PGHOST, database:PGDATABASE, user:PGUSER, password:PGPASSWORD};
+const pool = new pg.Pool({...dbConfig, max:3, idleTimeoutMillis:30000, connectionTimeoutMillis:5000, statement_timeout:10000});
 const INGESTION_KEY = process.env.SIGNALDECK_INGESTION_KEY;
 
-if (!DATABASE_URL || !INGESTION_KEY) {
-  console.error("Missing required env vars: DATABASE_URL, SIGNALDECK_INGESTION_KEY");
+if (!(DATABASE_URL || (PGHOST && PGDATABASE && PGUSER && PGPASSWORD)) || !INGESTION_KEY) {
+  console.error("Missing database connection settings or SIGNALDECK_INGESTION_KEY");
   process.exit(1);
 }
 
@@ -33,7 +39,7 @@ function val(list, key) { return anyValue(list?.find((a) => a.key === key)?.valu
 function nanosToIso(v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? new Date(n / 1_000_000).toISOString() : new Date().toISOString(); }
 function ctx(resource) {
   const a = resource?.attributes || [];
-  return {service:String(val(a,"service.name") ?? "unknown-service"), environment:String(val(a,"deployment.environment") ?? "unknown"), workspace:String(val(a,"signaldeck.workspace.id") ?? "default"), resourceAttributes:attrs(a)};
+  return {service:String(val(a,"service.name") ?? "unknown-service"), environment:String(val(a,"deployment.environment") ?? "unknown"), workspace:WORKSPACE_ID, resourceAttributes:attrs(a)};
 }
 function httpStatus(a) { const raw = a["http.response.status_code"] ?? a["http.status_code"]; const n = Number(raw); return Number.isFinite(n) ? n : undefined; }
 
