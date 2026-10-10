@@ -1,4 +1,5 @@
 import { workspaceId } from "./workspace";
+import { GoogleAuth } from "google-auth-library";
 
 export type SignalType = "log" | "trace" | "metric" | "k8s_event" | "deployment";
 
@@ -65,8 +66,13 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
     const endpoint = new URL("/v1/telemetry", readApiUrl);
     endpoint.searchParams.set("limit", String(safeLimit));
     if (signalType) endpoint.searchParams.set("type", signalType);
+    const audience = new URL(readApiUrl).origin;
+    const identityClient = await new GoogleAuth().getIdTokenClient(audience);
+    const identityHeaders = await identityClient.getRequestHeaders(audience);
+    const identityToken = identityHeaders.Authorization ?? identityHeaders.authorization;
+    if (!identityToken) throw new Error("Unable to obtain Cloud Run identity token");
     const response = await fetch(endpoint, {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: { Authorization: `Bearer ${key}`, "X-Serverless-Authorization": identityToken },
       cache: "no-store",
       signal: AbortSignal.timeout(10000),
     });
