@@ -1,0 +1,4 @@
+project_id = "signaldeck-lab-kd"
+region = "us-central1"
+database_instance_name = "signaldeck-db"
+database_tier = "db-f1-micro"
