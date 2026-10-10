@@ -1,12 +1,14 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
+import pg from "pg";
 
 const PORT = Number(process.env.PORT || 8080);
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
+const pool = new pg.Pool({connectionString:DATABASE_URL, max:3, idleTimeoutMillis:30000, connectionTimeoutMillis:5000, statement_timeout:10000});
 const INGESTION_KEY = process.env.SIGNALDECK_INGESTION_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !INGESTION_KEY) {
-  console.error("Missing required env vars: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SIGNALDECK_INGESTION_KEY");
+if (!DATABASE_URL || !INGESTION_KEY) {
+  console.error("Missing required env vars: DATABASE_URL, SIGNALDECK_INGESTION_KEY");
   process.exit(1);
 }
 
@@ -72,20 +74,43 @@ function normalizeMetrics(payload) {
   const out=[]; for (const rm of payload.resourceMetrics ?? []) { const c=ctx(rm.resource); for (const sm of rm.scopeMetrics ?? []) for (const metric of sm.metrics ?? []) { const points=metric.gauge?.dataPoints ?? metric.sum?.dataPoints ?? metric.histogram?.dataPoints ?? []; for (const p of points) out.push({workspace_id:c.workspace,signal_type:"metric",service_name:c.service,environment:c.environment,message:metric.name??"unnamed metric",attributes:{...c.resourceAttributes,...attrs(p.attributes),unit:metric.unit,value:p.asDouble??p.asInt??p.sum??p.count},observed_at:nanosToIso(p.timeUnixNano)}); } } return out;
 }
 
+const MAX_BYTES = 1024 * 1024;
+const MAX_RECORDS = 500;
+const FIELDS = ["workspace_id","signal_type","service_name","environment","severity","message","trace_id","span_id","parent_span_id","duration_ms","status_code","attributes","observed_at"];
+function authorized(header) {
+  if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
+  const provided=Buffer.from(header.slice(7)), expected=Buffer.from(INGESTION_KEY);
+  return provided.length===expected.length && timingSafeEqual(provided,expected);
+}
 async function save(records) {
   if (!records.length) return;
-  const normalized = records.map(r=>({...r,severity:r.severity??null,trace_id:r.trace_id??null,span_id:r.span_id??null,parent_span_id:r.parent_span_id??null,duration_ms:r.duration_ms??null,status_code:r.status_code??null,attributes:r.attributes??{}}));
-  const resp = await fetch(`${SUPABASE_URL}/rest/v1/telemetry_events`, {method:"POST",headers:{apikey:SUPABASE_SERVICE_ROLE_KEY,Authorization:`Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,"content-type":"application/json",Prefer:"return=minimal"},body:JSON.stringify(normalized)});
-  if (!resp.ok) throw new Error(`Supabase insert failed: ${resp.status} ${await resp.text()}`);
+  if (records.length > MAX_RECORDS) {const e=new Error("batch_limit_exceeded");e.status=413;throw e;}
+  const params=[], tuples=[];
+  records.forEach((r,i)=>{
+    const row=FIELDS.map(k=>k==="attributes"?JSON.stringify(r[k]??{}):(r[k]??null));
+    const offset=i*FIELDS.length;
+    params.push(...row);
+    tuples.push("("+row.map((_,j)=>"$"+(offset+j+1)).join(",")+")");
+  });
+  const sql="INSERT INTO telemetry_events ("+FIELDS.join(",")+") VALUES "+tuples.join(",");
+  await pool.query(sql,params);
 }
-
-async function readBody(req) { const chunks=[]; for await (const chunk of req) chunks.push(chunk); return Buffer.concat(chunks).toString("utf8"); }
+async function readBody(req) {
+  const chunks=[];let size=0;
+  for await (const chunk of req) {
+    size+=chunk.length;
+    if(size>MAX_BYTES){const e=new Error("payload_too_large");e.status=413;throw e;}
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 const server = http.createServer(async (req,res)=>{
   try {
-    if (req.method === "GET" && req.url === "/healthz") return json(res,200,{status:"ok"});
+    if (req.method === "GET" && (req.url === "/health" || req.url === "/healthz")) return json(res,200,{status:"ok"});
+    if (req.method === "GET" && req.url === "/ready") {await pool.query("SELECT 1");return json(res,200,{status:"ready"});}
     if (req.method !== "POST") return json(res,405,{error:"method_not_allowed"});
-    if (req.headers.authorization !== `Bearer ${INGESTION_KEY}`) return json(res,401,{error:"unauthorized"});
+    if (!authorized(req.headers.authorization)) return json(res,401,{error:"unauthorized"});
     const bodyText = await readBody(req); const payload = bodyText ? JSON.parse(bodyText) : {};
     let records;
     if (req.url === "/v1/traces" || req.url === "/api/otel/v1/traces") records = normalizeTraces(payload);
@@ -93,10 +118,10 @@ const server = http.createServer(async (req,res)=>{
     else if (req.url === "/v1/metrics" || req.url === "/api/otel/v1/metrics") records = normalizeMetrics(payload);
     else return json(res,404,{error:"not_found"});
     await save(records);
-    return json(res,202,{backend:"supabase",accepted:records.length});
+    return json(res,202,{backend:"postgresql",accepted:records.length});
   } catch (err) {
     console.error(err);
-    return json(res,400,{error:"ingest_failed",message:String(err?.message ?? err)});
+    return json(res,err?.status??(err instanceof SyntaxError?400:503),{error:err?.status===413?"request_too_large":err instanceof SyntaxError?"invalid_json":"ingest_unavailable"});
   }
 });
 server.listen(PORT,()=>console.log(`SignalDeck ingest listening on ${PORT}`));
