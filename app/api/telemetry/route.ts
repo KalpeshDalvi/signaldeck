@@ -4,6 +4,7 @@ import { readTelemetry, saveTelemetry, SignalType, TelemetryRecord, verifyIngest
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  if (!verifyIngestionKey(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit") ?? 100);
   const type = url.searchParams.get("type") as SignalType | null;
