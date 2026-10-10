@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "next": "latest",
+    "google-auth-library": "^9.15.1",
     "react": "latest",
     "react-dom": "latest"
   },
