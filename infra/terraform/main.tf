@@ -1,7 +1,7 @@
 resource "google_sql_database_instance" "signaldeck" {
-  name             = var.database_instance_name
-  region           = var.region
-  database_version = var.database_version
+  name                = var.database_instance_name
+  region              = var.region
+  database_version    = var.database_version
   deletion_protection = var.enable_deletion_protection
 
   settings {
