@@ -24,6 +24,9 @@ resource "google_sql_database_instance" "signaldeck" {
   }
   lifecycle {
     prevent_destroy = true
+    ignore_changes = [
+      settings[0].enable_dataplex_integration
+    ]
   }
 }
 
