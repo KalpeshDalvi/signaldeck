@@ -54,6 +54,27 @@ export async function saveTelemetry(records: TelemetryRecord[]) {
 export async function readTelemetry(limit = 100, signalType?: SignalType, requestedWorkspace?: string) {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const selectedWorkspace = workspaceId(requestedWorkspace);
+  const readApiUrl = process.env.SIGNALDECK_READ_API_URL;
+  if (readApiUrl) {
+    const key = process.env.SIGNALDECK_READ_API_KEY;
+    if (!key) throw new Error("SIGNALDECK_READ_API_KEY is required when the read API is configured");
+    // The read API fixes the workspace server-side. Never allow a caller to choose another tenant.
+    if (selectedWorkspace !== (process.env.SIGNALDECK_WORKSPACE_ID ?? "default")) {
+      throw new Error("Requested workspace does not match the configured read API workspace");
+    }
+    const endpoint = new URL("/v1/telemetry", readApiUrl);
+    endpoint.searchParams.set("limit", String(safeLimit));
+    if (signalType) endpoint.searchParams.set("type", signalType);
+    const response = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${key}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`Telemetry read API returned HTTP ${response.status}`);
+    const result = (await response.json()) as { records?: TelemetryRecord[] };
+    if (!Array.isArray(result.records)) throw new Error("Unexpected telemetry read API response");
+    return result.records;
+  }
   const config = supabaseConfig();
   if (!config) {
     const records = memoryStore.filter((record) => record.workspace_id === selectedWorkspace && (!signalType || record.signal_type === signalType));
