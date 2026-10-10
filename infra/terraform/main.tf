@@ -12,6 +12,11 @@ resource "google_sql_database_instance" "signaldeck" {
     disk_size         = var.database_disk_size_gb
     disk_autoresize   = false
 
+    database_flags {
+      name  = "cloudsql.enable_pg_cron"
+      value = "on"
+    }
+
     backup_configuration {
       enabled                        = true
       start_time                     = "03:00"
