@@ -10,7 +10,13 @@ export const dynamic = "force-dynamic";
 export default async function Traces({ searchParams }: { searchParams: Promise<{ trace?: string }> }) {
   const params = await searchParams;
   const spans = await readTelemetry(500, "trace");
-  const traces = buildTraceSummaries(spans);
+  // Hide probe-only traces when real application traces are available.
+  const allTraces = buildTraceSummaries(spans);
+  const isProbe = (value: string) => /(?:healthz|health|readyz|livez)(?:\\b|\\/)/i.test(value);
+  const applicationTraces = allTraces.filter((trace) => !trace.spans.every((span) =>
+    isProbe(span.message) || isProbe(String(span.attributes["http.route"] ?? span.attributes["url.path"] ?? ""))
+  ));
+  const traces = applicationTraces.length ? applicationTraces : allTraces;
   const selected = traces.find((trace) => trace.traceId === params.trace) ?? traces[0];
 
   return <>
@@ -20,7 +26,7 @@ export default async function Traces({ searchParams }: { searchParams: Promise<{
 
     {selected ? <div className="trace-layout">
       <article className="panel">
-        <div className="panel-title"><div><h2>Recent traces</h2><p>Grouped by trace ID, slowest first</p></div></div>
+        <div className="panel-title"><div><h2>Recent traces</h2><p>Grouped by trace ID, slowest first · health checks hidden when application traces exist</p></div></div>
         <div className="trace-list">
           {traces.map((trace) => <Link key={trace.traceId} href={`/traces?trace=${encodeURIComponent(trace.traceId)}`} className={`trace-link ${trace.traceId === selected.traceId ? "selected" : ""}`}>
             <div>
