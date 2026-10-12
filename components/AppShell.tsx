@@ -26,7 +26,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Link className={pathname === href || (href !== "/" && pathname.startsWith(href)) ? "active" : ""} href={href} key={href}>{label}</Link>
           ))}
         </nav>
-        <div className="workspace"><small>Workspace</small><strong>BillPay Platform</strong><span>Production</span></div>
+        <div className="workspace"><small>Workspace</small><strong>SignalDeck Lab</strong><span>GKE · Lab</span></div>
       </aside>
       <section className="content">{children}</section>
     </main>
