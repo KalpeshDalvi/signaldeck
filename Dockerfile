@@ -13,7 +13,6 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=8080
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
-COPY --from=build /app/public ./public
 USER node
 EXPOSE 8080
 CMD ["node", "server.js"]
