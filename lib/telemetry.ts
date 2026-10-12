@@ -99,8 +99,8 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
 }
 
 export function verifyIngestionKey(request: Request) {
-  const expected = process.env.SIGNALDECK_INGESTION_KEY ?? "dev-signaldeck-key";
-  return request.headers.get("authorization") === `Bearer ${expected}`;
+  const expected = process.env.SIGNALDECK_INGESTION_KEY;
+  return Boolean(expected) && request.headers.get("authorization") === `Bearer ${expected}`;
 }
 
 export function valueOf(attributeList: Array<{ key?: string; value?: Record<string, unknown> }> | undefined, key: string) {
