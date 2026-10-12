@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.env
+.env.*
+!.env.example
+*.tfstate
+*.tfstate.*
+*.tfplan
+infra/terraform/.terraform
+cloud-sql
+cloud-run-read-api
+cloud-run-ingest
