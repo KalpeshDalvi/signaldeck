@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export default async function Traces({ searchParams }: { searchParams: Promise<{ trace?: string }> }) {
   const params = await searchParams;
-  const spans = await readTelemetry(500, "trace");
+  const spans = await readTelemetry(500, "trace", undefined, "applications");
   // Hide probe-only traces when real application traces are available.
   const allTraces = buildTraceSummaries(spans);
   const isProbe = (value: string) => /(?:healthz|health|readyz|livez)(?:\\b|\\/)/i.test(value);
