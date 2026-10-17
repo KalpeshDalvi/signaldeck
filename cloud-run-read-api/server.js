@@ -39,6 +39,12 @@ const server = http.createServer(async (req, res) => {
       const type = url.searchParams.get("type");
       if (type && !types.has(type)) return send(res, 400, { error: "invalid_type" });
       if (type === "trace" && url.searchParams.get("view") === "applications") {
+        const allowedMinutes = new Set([15, 60, 360, 1440, 10080]);
+        const minutes = Number(url.searchParams.get("minutes") ?? "60");
+        if (!allowedMinutes.has(minutes)) return send(res, 400, { error: "invalid_time_range" });
+        const service = url.searchParams.get("service") || null;
+        if (service && (service.length > 128 || !/^[a-zA-Z0-9_.-]+$/.test(service))) return send(res, 400, { error: "invalid_service" });
+        const errorsOnly = url.searchParams.get("errors") === "1";
         // Select recent application trace IDs first, then retrieve their complete span groups.
         // This prevents frequent Kubernetes probes from consuming the 500-span window.
         const result = await pool.query(
@@ -47,6 +53,18 @@ const server = http.createServer(async (req, res) => {
              FROM public.telemetry_events
              WHERE workspace_id = $1 AND signal_type = 'trace'
                AND trace_id IS NOT NULL
+               AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
+               AND ($4::text IS NULL OR trace_id IN (
+                 SELECT trace_id FROM public.telemetry_events
+                 WHERE workspace_id = $1 AND signal_type = 'trace' AND service_name = $4
+                   AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
+               ))
+               AND (NOT $5::boolean OR trace_id IN (
+                 SELECT trace_id FROM public.telemetry_events
+                 WHERE workspace_id = $1 AND signal_type = 'trace'
+                   AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
+                   AND (status_code >= 500 OR upper(coalesce(severity,'')) = 'ERROR')
+               ))
                AND message !~* '(healthz|readyz|livez|/health)([/?[:space:]]|$)'
              GROUP BY trace_id ORDER BY latest DESC LIMIT 100
            )
@@ -55,7 +73,7 @@ const server = http.createServer(async (req, res) => {
            JOIN selected_traces s ON s.trace_id = t.trace_id
            WHERE t.workspace_id = $1 AND t.signal_type = 'trace'
            ORDER BY s.latest DESC, t.observed_at ASC LIMIT $2`,
-          [workspace, limit]
+          [workspace, limit, minutes, service, errorsOnly]
         );
         return send(res, 200, { records: result.rows, count: result.rowCount });
       }
