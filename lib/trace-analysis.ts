@@ -28,6 +28,17 @@ function dependencyType(span: TelemetryRecord): TraceSpan["dependencyType"] {
   return "internal";
 }
 
+export function spanOperation(span: TelemetryRecord) {
+  const a = span.attributes ?? {};
+  const method = String(a["http.request.method"] ?? a["http.method"] ?? "").toUpperCase();
+  const raw = a["http.route"] ?? a["url.path"] ?? a["http.target"] ?? a["url.full"] ?? a["http.url"];
+  let path = "";
+  if (typeof raw === "string" && raw) {
+    try { path = new URL(raw).pathname; } catch { path = raw.split("?")[0]; }
+  }
+  return method && path.startsWith("/") ? method + " " + path : span.message;
+}
+
 function errorSpan(span: TelemetryRecord) {
   return (span.status_code ?? 0) >= 500 || span.severity?.toUpperCase() === "ERROR";
 }
@@ -94,5 +105,10 @@ export function bottleneckFinding(trace: TraceSummary) {
   if (!trace.bottleneck) return "No bottleneck could be identified from this trace.";
   const span = trace.bottleneck;
   const share = trace.durationMs > 0 ? Math.round(((span.duration_ms ?? 0) / trace.durationMs) * 100) : 0;
-  return `${span.service_name} · ${span.message} accounts for about ${share}% of the trace duration (${Math.round(span.duration_ms ?? 0)} ms).`;
+  const children = trace.spans.filter((child) => child.parent_span_id === span.span_id && child.service_name !== span.service_name);
+  const downstream = children.sort((a, b) => (b.duration_ms ?? 0) - (a.duration_ms ?? 0))[0];
+  if (downstream && span.dependencyType === "http") {
+    return span.service_name + " · " + spanOperation(span) + " took " + Math.round(span.duration_ms ?? 0) + " ms (" + share + "% of the trace). " + downstream.service_name + " processed its span in " + Math.round(downstream.duration_ms ?? 0) + " ms. The remaining time may include transport, scheduling, and instrumentation overhead; it is not a direct measurement of network latency.";
+  }
+  return span.service_name + " · " + spanOperation(span) + " accounts for about " + share + "% of the trace duration (" + Math.round(span.duration_ms ?? 0) + " ms).";
 }
