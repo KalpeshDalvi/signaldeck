@@ -12,7 +12,7 @@ export default async function Traces({ searchParams }: { searchParams: Promise<{
   const spans = await readTelemetry(500, "trace", undefined, "applications");
   // Hide probe-only traces when real application traces are available.
   const allTraces = buildTraceSummaries(spans);
-  const isProbe = (value: string) => /(?:healthz|health|readyz|livez)(?:\\b|\\/)/i.test(value);
+  const isProbe = (value: string) => /\/(?:healthz?|readyz|livez)(?:\b|\/|\?)/i.test(value);
   const applicationTraces = allTraces.filter((trace) => !trace.spans.every((span) =>
     isProbe(span.message) || isProbe(String(span.attributes["http.route"] ?? span.attributes["url.path"] ?? ""))
   ));
