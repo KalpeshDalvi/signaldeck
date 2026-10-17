@@ -7,9 +7,11 @@ import "./traces.css";
 
 export const dynamic = "force-dynamic";
 
-export default async function Traces({ searchParams }: { searchParams: Promise<{ trace?: string; service?: string; errors?: string }> }) {
+export default async function Traces({ searchParams }: { searchParams: Promise<{ trace?: string; service?: string; errors?: string; minutes?: string }> }) {
   const params = await searchParams;
-  const spans = await readTelemetry(500, "trace", undefined, "applications");
+  const allowedRanges = [15, 60, 360, 1440, 10080];
+  const minutes = allowedRanges.includes(Number(params.minutes)) ? Number(params.minutes) : 60;
+  const spans = await readTelemetry(500, "trace", undefined, "applications", { minutes, service: params.service, errorsOnly: params.errors === "1" });
   // Hide probe-only traces when real application traces are available.
   const allTraces = buildTraceSummaries(spans);
   const isProbe = (value: string) => /\/(?:healthz?|readyz|livez)(?:\b|\/|\?)/i.test(value);
@@ -22,6 +24,13 @@ export default async function Traces({ searchParams }: { searchParams: Promise<{
   const traceHref = (id: string) => {
     const q = new URLSearchParams({ trace: id });
     if (params.service) q.set("service", params.service);
+    q.set("minutes", String(minutes));
+    if (params.errors === "1") q.set("errors", "1");
+    return "/traces?" + q.toString();
+  };
+  const rangeHref = (range: number) => {
+    const q = new URLSearchParams({ minutes: String(range) });
+    if (params.service) q.set("service", params.service);
     if (params.errors === "1") q.set("errors", "1");
     return "/traces?" + q.toString();
   };
@@ -32,20 +41,27 @@ export default async function Traces({ searchParams }: { searchParams: Promise<{
       <span className="pill healthy">{traces.length} traces · {spans.length} spans</span>
     </PageHeader>
 
-    {selected ? <div className="trace-layout">
+    <nav className="trace-timebar" aria-label="Trace time range">
+      <span>Time range</span>
+      {([ [15, "15 min"], [60, "1 hour"], [360, "6 hours"], [1440, "24 hours"], [10080, "7 days"] ] as const).map(([range, label]) =>
+        <Link key={range} href={rangeHref(range)} className={minutes === range ? "active" : ""}>{label}</Link>
+      )}
+    </nav>
+    <div className="trace-layout">
       <article className="panel">
         <div className="panel-title"><div><h2>Recent traces</h2><p>Grouped by trace ID, slowest first · health checks hidden when application traces exist</p></div></div>
         <form className="trace-filters" action="/traces">
+          <input type="hidden" name="minutes" value={minutes} />
           <label>Service <select name="service" defaultValue={params.service ?? ""}><option value="">All services</option>{services.map((service) => <option key={service} value={service}>{service}</option>)}</select></label>
           <label className="trace-filter-check"><input type="checkbox" name="errors" value="1" defaultChecked={params.errors === "1"} /> Errors only</label>
           <button type="submit">Apply</button>
-          <Link href="/traces">Reset</Link>
+          <Link href={rangeHref(minutes)}>Reset</Link>
         </form>
         <div className="trace-list">
           {filteredTraces.map((trace) => <Link key={trace.traceId} href={traceHref(trace.traceId)} className={`trace-link ${trace.traceId === selected.traceId ? "selected" : ""}`}>
             <div>
-              <strong>{trace.root?.message ?? "Distributed trace"}</strong>
-              <p>{trace.root?.service_name ?? "unknown service"} · {trace.serviceCount} services · {trace.spans.length} spans</p>
+              <strong>{params.service ? (trace.spans.find((span) => span.service_name === params.service)?.message ?? trace.root?.message ?? "Distributed trace") : (trace.root?.message ?? "Distributed trace")}</strong>
+              <p>{params.service ?? trace.root?.service_name ?? "unknown service"} · {trace.serviceCount} services · {trace.spans.length} spans</p>
               <small>{trace.traceId}</small>
             </div>
             <div>
@@ -101,6 +117,6 @@ export default async function Traces({ searchParams }: { searchParams: Promise<{
           <pre className="attributes">{JSON.stringify(selected.bottleneck.attributes, null, 2)}</pre>
         </article> : null}
       </section>
-    </div> : <article className="panel empty-state"><h2>No distributed traces received</h2><p>Point an OTLP/HTTP exporter to <code>/api/otel/v1/traces</code>. Once parent-child spans arrive, SignalDeck will build the waterfall and dependency analysis automatically.</p></article>}
+    </div>
   </>;
 }
