@@ -52,7 +52,7 @@ export async function saveTelemetry(records: TelemetryRecord[]) {
   return { backend: "supabase", accepted: normalized.length };
 }
 
-export async function readTelemetry(limit = 100, signalType?: SignalType, requestedWorkspace?: string) {
+export async function readTelemetry(limit = 100, signalType?: SignalType, requestedWorkspace?: string, view?: "applications") {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const selectedWorkspace = workspaceId(requestedWorkspace);
   const readApiUrl = process.env.SIGNALDECK_READ_API_URL;
@@ -66,6 +66,7 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
     const endpoint = new URL("/v1/telemetry", readApiUrl);
     endpoint.searchParams.set("limit", String(safeLimit));
     if (signalType) endpoint.searchParams.set("type", signalType);
+    if (signalType === "trace" && view === "applications") endpoint.searchParams.set("view", view);
     const audience = new URL(readApiUrl).origin;
     const identityClient = await new GoogleAuth().getIdTokenClient(audience);
     const identityHeaders = await identityClient.getRequestHeaders(audience);
