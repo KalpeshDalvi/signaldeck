@@ -58,7 +58,7 @@ export default async function Traces({ searchParams }: { searchParams: Promise<{
           <Link href={rangeHref(minutes)}>Reset</Link>
         </form>
         <div className="trace-list">
-          {filteredTraces.map((trace) => <Link key={trace.traceId} href={traceHref(trace.traceId)} className={`trace-link ${trace.traceId === selected.traceId ? "selected" : ""}`}>
+          {filteredTraces.map((trace) => <Link key={trace.traceId} href={traceHref(trace.traceId)} className={`trace-link ${trace.traceId === selected?.traceId ? "selected" : ""}`}>
             <div>
               <strong>{params.service ? (trace.spans.find((span) => span.service_name === params.service)?.message ?? trace.root?.message ?? "Distributed trace") : (trace.root?.message ?? "Distributed trace")}</strong>
               <p>{params.service ?? trace.root?.service_name ?? "unknown service"} · {trace.serviceCount} services · {trace.spans.length} spans</p>
