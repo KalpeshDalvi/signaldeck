@@ -38,6 +38,27 @@ const server = http.createServer(async (req, res) => {
       const limit = Math.min(Number(rawLimit), 500);
       const type = url.searchParams.get("type");
       if (type && !types.has(type)) return send(res, 400, { error: "invalid_type" });
+      if (type === "trace" && url.searchParams.get("view") === "applications") {
+        // Select recent application trace IDs first, then retrieve their complete span groups.
+        // This prevents frequent Kubernetes probes from consuming the 500-span window.
+        const result = await pool.query(
+          `WITH selected_traces AS (
+             SELECT trace_id, MAX(observed_at) AS latest
+             FROM public.telemetry_events
+             WHERE workspace_id = $1 AND signal_type = 'trace'
+               AND trace_id IS NOT NULL
+               AND message !~* '(healthz|readyz|livez|/health)([/?[:space:]]|$)'
+             GROUP BY trace_id ORDER BY latest DESC LIMIT 100
+           )
+           SELECT ${columns.split(",").map((column) => "t." + column).join(",")}
+           FROM public.telemetry_events t
+           JOIN selected_traces s ON s.trace_id = t.trace_id
+           WHERE t.workspace_id = $1 AND t.signal_type = 'trace'
+           ORDER BY s.latest DESC, t.observed_at ASC LIMIT $2`,
+          [workspace, limit]
+        );
+        return send(res, 200, { records: result.rows, count: result.rowCount });
+      }
       const result = await pool.query(
         `SELECT ${columns} FROM public.telemetry_events
          WHERE workspace_id = $1 AND ($2::text IS NULL OR signal_type = $2)
