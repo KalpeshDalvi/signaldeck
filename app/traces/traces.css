@@ -16,3 +16,10 @@
 .trace-filters a{padding:7px;color:var(--muted)}
 .trace-detail .attributes{max-width:100%;overflow:auto}
 @media(max-width:1050px){.trace-layout{grid-template-columns:minmax(0,1fr)}}
+
+.trace-timebar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.trace-timebar>span{font-size:12px;color:var(--muted);margin-right:8px}
+.trace-timebar a{padding:9px 13px;border:1px solid var(--line);border-radius:9px;color:var(--muted);text-decoration:none;font-size:12px}
+.trace-timebar a.active{border-color:#2b6656;background:#102b26;color:#52e1b1;font-weight:700}
+.trace-timebar a:hover{border-color:#2b6656}
+.trace-empty{font-size:13px;color:var(--muted);line-height:1.5}
