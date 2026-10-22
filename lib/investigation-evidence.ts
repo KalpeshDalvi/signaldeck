@@ -6,17 +6,18 @@ import { readTelemetry, type TelemetryRecord } from "./telemetry";
  * Kubernetes state snapshots and can miss short failures entirely.
  */
 export async function readInvestigationEvidence(minutes: 15 | 60 | 360 | 1440 | 10080 = 60): Promise<TelemetryRecord[]> {
-  const [applicationSpans, failingSpans, applicationLogs, kubernetesRecords] = await Promise.all([
+  const [applicationSpans, failingSpans, applicationLogs, kubernetesRecords, historicalAnomalies] = await Promise.all([
     readTelemetry(500, "trace", undefined, "applications", { minutes }),
     readTelemetry(500, "trace", undefined, "applications", { minutes, errorsOnly: true }),
-    readTelemetry(500, "log"),
+    readTelemetry(500, "log", undefined, "investigation", { minutes }),
     readTelemetry(500, "k8s_event"),
+    readTelemetry(500, "k8s_event", undefined, "investigation", { minutes }),
   ]);
 
   const cutoff = Date.now() - minutes * 60_000;
   const unique = new Map<string, TelemetryRecord>();
 
-  for (const record of [...applicationSpans, ...failingSpans, ...applicationLogs, ...kubernetesRecords]) {
+  for (const record of [...applicationSpans, ...failingSpans, ...applicationLogs, ...kubernetesRecords, ...historicalAnomalies]) {
     const observed = Date.parse(record.observed_at);
     if (!Number.isFinite(observed) || observed < cutoff || observed > Date.now() + 5 * 60_000) continue;
     const key = record.id ?? [
