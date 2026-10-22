@@ -44,9 +44,10 @@ GKE API-server Kubernetes audit logs use `protoPayload.serviceName="k8s.io"` and
 
 ```powershell
 gcloud.cmd logging read `
-  'resource.type="k8s_cluster" AND protoPayload.serviceName="k8s.io" AND timestamp>="2026-10-22T17:26:00Z" AND timestamp<="2026-10-22T17:33:00Z" AND protoPayload.resourceName:"inventory"' `
+  'resource.type=k8s_cluster AND protoPayload.serviceName=k8s.io AND protoPayload.resourceName:inventory' `
   --project=signaldeck-lab-kd `
-  --limit=50 `
+  --freshness=1d `
+  --limit=100 `
   --format="table(timestamp,protoPayload.methodName,protoPayload.authenticationInfo.principalEmail,protoPayload.resourceName)"
 ```
 
@@ -65,3 +66,36 @@ Kubernetes object logs are **not** application stdout/stderr. The current collec
 - A GKE audit record (where available) identifies the initiating operation and actor.
 - SignalDeck distinguishes verified cause, working hypothesis, and missing evidence.
 - It recommends both a safe immediate recovery and an auditable recurrence-prevention measure.
+
+## Audit-backed investigation in the SignalDeck dashboard
+
+The dashboard now has a bounded, read-only lookup using its Cloud Run runtime service account, via `POST https://logging.googleapis.com/v2/entries:list`. No user passwords, Kubernetes admin token, or static API key are involved. Only audit records targeting a suspected Deployment in the configured namespace and near the most recently observed failed request are retrieved. An audit method and principal identify an initiating *API operation*, not necessarily the root configuration decision or the actual replica value unless the request payload contains it.
+
+Set the dashboard's configuration (preserve its existing read API URL, workspace, and secret settings):
+
+- `SIGNALDECK_GCP_PROJECT_ID=signaldeck-lab-kd`
+- `SIGNALDECK_GKE_NAMESPACE=signaldeck-lab`
+- `SIGNALDECK_GKE_CLUSTER=signaldeck-lab` (optional, but reduces cross-cluster matches)
+
+The Cloud Run identity needs `logging.logEntries.list` on the target project or a properly scoped log view. If the page reports `permission_denied`, the project administrator can temporarily grant `roles/logging.viewer` to the lab dashboard service account for testing:
+
+```powershell
+gcloud.cmd projects add-iam-policy-binding signaldeck-lab-kd `
+  --member="serviceAccount:signaldeck-dashboard-runtime@signaldeck-lab-kd.iam.gserviceaccount.com" `
+  --role="roles/logging.viewer"
+```
+
+**Security note:** A project-level Logging Viewer role can read more logs than SignalDeck needs. Before multi-tenant deployment, replace this lab configuration with a dedicated investigation identity and fine-grained log-view authorization. Do not grant `roles/owner`, `roles/editor`, or Kubernetes mutation privileges to the RCA investigator. Do not expose GKE audit data to unauthorized workspaces. If IAM cannot be granted, leave it unmodified: the page should display `permission_denied` and continue rendering trace diagnostics.
+
+Observed lab audit sequence (UTC, October 22, 2026):
+
+- 17:28:53.739 — `io.k8s.apps.v1.deployments.scale.patch` on `inventory/scale` by the authenticated test identity.
+- 17:28:53.932 — ReplicaSet controller deleted the inventory pod.
+- 17:29:08 — Controlled checkout POST returned HTTP 500.
+- 17:29:13.673 — A second `deployments.scale.patch` restored the Deployment.
+- 17:29:13.827 — ReplicaSet controller created the replacement inventory pod.
+- 17:29:32.518 — EndpointSlice controller updated inventory endpoints.
+
+An audit timeline demonstrates what was changed, who requested the API operation and what happened afterward. It does not establish the human intent or upstream process responsible for issuing the request. SignalDeck should explicitly preserve that distinction.
+
+Verification: after rebuilding and deploying the dashboard, open `/correlation?minutes=360`. The Kubernetes audit section should show the scale operations if the runtime identity is authorized and Cloud Logging retains the entries. A lack of results is not equivalent to proof that no scale operation happened.
