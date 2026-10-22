@@ -107,7 +107,13 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
     };
   }
   const names = new Set(serviceNames.filter(Boolean).map(s => s.toLowerCase()));
-  const relevant = records.filter(r => r.signal_type === "log" && (names.has(r.service_name.toLowerCase()) || serviceNames.some(s => JSON.stringify(r.attributes).toLowerCase().includes(s.toLowerCase()))));
+  const failureTraceIds = new Set(failedTraces.map(r => r.trace_id).filter(Boolean));
+  const relevant = records.filter(r =>
+    r.signal_type === "log" &&
+    (names.has(r.service_name.toLowerCase()) || serviceNames.some(s => JSON.stringify(r.attributes).toLowerCase().includes(s.toLowerCase()))) &&
+    (Boolean(r.trace_id && failureTraceIds.has(r.trace_id)) ||
+      failedTraces.some(f => Math.abs(Date.parse(f.observed_at) - Date.parse(r.observed_at)) <= 5 * 60_000))
+  );
   const hits = relevant.flatMap(r => {
     const rule = patterns.find(p => p.test.test(r.message));
     return rule ? [{r,rule}] : [];
@@ -125,6 +131,6 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
     source:"Application logs",
     cause:selected.cause, mechanism:selected.mechanism, recovery:selected.recovery,
     permanentFix:selected.permanentFix, prevention:selected.prevention, validation:selected.validation,
-    evidence, limitations:"Pattern-matched log evidence supports this failure mechanism, but does not establish the originating configuration or code defect. Verify with metrics, changes, and targeted diagnostics before confirming root cause."
+    evidence, limitations:"Log evidence temporally or trace-correlated with failed requests supports this failure mechanism, but does not establish the originating configuration or code defect. Verify with metrics, changes, and targeted diagnostics before confirming root cause."
   };
 }
