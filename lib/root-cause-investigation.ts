@@ -56,7 +56,48 @@ const patterns = [
    validation:"Verify successful authenticated TLS connections with certificate validation enabled."}
 ];
 
-export function investigateRootCause(records: TelemetryRecord[], serviceNames: string[]): RootCauseInvestigation | null {
+export function investigateRootCause(records: TelemetryRecord[], serviceNames: string[], incidentStartedAt?: string): RootCauseInvestigation | null {
+  // A deployment snapshot during the failed request is stronger causal evidence
+  // than a generic connection-refused error. Do not mistake current healthy
+  // replicas after recovery for state at the time of the incident.
+  const started = incidentStartedAt ? Date.parse(incidentStartedAt) : NaN;
+  const scope = new Set(serviceNames.filter(Boolean).map(s => s.toLowerCase()));
+  const scaledToZero = records
+    .filter(r =>
+      r.signal_type === "k8s_event" &&
+      r.attributes["k8s.kind"] === "Deployment" &&
+      Number(r.attributes["k8s.deployment.replicas"]) === 0 &&
+      scope.has(String(r.attributes["k8s.deployment.name"] ?? r.service_name).toLowerCase()) &&
+      Number.isFinite(started) &&
+      Math.abs(Date.parse(r.observed_at) - started) <= 3 * 60_000
+    )
+    .sort((a, b) => Math.abs(Date.parse(a.observed_at) - started) - Math.abs(Date.parse(b.observed_at) - started));
+  if (scaledToZero.length > 0) {
+    const k = scaledToZero[0];
+    const workload = String(k.attributes["k8s.deployment.name"] ?? k.service_name);
+    const failedTrace = records.find(r => r.signal_type === "trace" &&
+      ((r.status_code ?? 0) >= 500 || r.severity?.toUpperCase() === "ERROR") &&
+      Math.abs(Date.parse(r.observed_at) - started) <= 3 * 60_000);
+    const evidence = [k, ...(failedTrace ? [failedTrace] : [])].map(r => ({
+      id: r.id ?? r.span_id ?? r.observed_at,
+      time: r.observed_at,
+      service: r.service_name,
+      message: r.signal_type === "trace"
+        ? `Failed trace: ${r.message} (HTTP ${r.status_code ?? "unknown"})`
+        : `${r.message}; desired replicas=${r.attributes["k8s.deployment.replicas"]}, ready replicas=${r.attributes["k8s.deployment.ready_replicas"] ?? "unknown"}`,
+      traceId: r.trace_id
+    }));
+    return {
+      cause: `${workload} Deployment configured for zero replicas`,
+      mechanism: `A Kubernetes snapshot near the failed request shows ${workload} with desired replicas set to zero. The application dependency therefore had no pods available to serve requests. This proves the observed workload state, not who or what changed the replica count.`,
+      recovery: `Restore ${workload} to the approved replica count, verify Service endpoints, and repeat the failed transaction.`,
+      permanentFix: "Trace the scale-down to the owning actor or automation using Kubernetes audit logs, GitOps or deployment history, and autoscaler configuration. Correct the authorized source of the unwanted change.",
+      prevention: "Enforce approved minimum availability for critical services through GitOps reviews, admission guardrails, and alerts on desired replicas becoming zero; ensure disaster-recovery workflows are exempted deliberately.",
+      validation: "Confirm serving replicas and endpoints recover, failed requests succeed, and scale-down guardrails reject an unapproved zero-replica change.",
+      evidence,
+      limitations: "Kubernetes state near the failure supports a zero-replica causal mechanism. The initiating user, controller, or deployment action is not yet identified; audit or change evidence is required before claiming the organizational root cause."
+    };
+  }
   const names = new Set(serviceNames.filter(Boolean).map(s => s.toLowerCase()));
   const relevant = records.filter(r => r.signal_type === "log" && (names.has(r.service_name.toLowerCase()) || serviceNames.some(s => JSON.stringify(r.attributes).toLowerCase().includes(s.toLowerCase()))));
   const hits = relevant.flatMap(r => {
