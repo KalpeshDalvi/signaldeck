@@ -57,11 +57,10 @@ const patterns = [
    validation:"Verify successful authenticated TLS connections with certificate validation enabled."}
 ];
 
-export function investigateRootCause(records: TelemetryRecord[], serviceNames: string[], incidentStartedAt?: string): RootCauseInvestigation | null {
+export function investigateRootCause(records: TelemetryRecord[], serviceNames: string[]): RootCauseInvestigation | null {
   // A deployment snapshot during the failed request is stronger causal evidence
   // than a generic connection-refused error. Do not mistake current healthy
   // replicas after recovery for state at the time of the incident.
-  const started = incidentStartedAt ? Date.parse(incidentStartedAt) : NaN;
   const scope = new Set(serviceNames.filter(Boolean).map(s => s.toLowerCase()));
   const failedTraces = records.filter(r =>
     r.signal_type === "trace" &&
