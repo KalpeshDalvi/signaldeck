@@ -59,6 +59,13 @@ function k8sEvidence(body, context, log, scopeName) {
   } else if (kind === "Pod") {
     const statuses = object.status?.containerStatuses ?? []; const restarts = statuses.reduce((s,x)=>s+Number(x.restartCount??0),0); const waiting = statuses.map(x=>x.state?.waiting?.reason).find(Boolean); const terminated = statuses.map(x=>x.lastState?.terminated?.reason ?? x.state?.terminated?.reason).find(Boolean); const reason = waiting ?? terminated ?? object.status?.reason; const phase = object.status?.phase ?? "Unknown";
     message = `Pod ${name} is ${phase}${reason ? ` (${reason})` : ""}`; severity = phase === "Failed" || waiting === "CrashLoopBackOff" || terminated === "OOMKilled" ? "ERROR" : "INFO";
+    const readyCondition = object.status?.conditions?.find(c => c.type === "Ready");
+    const containersReady = statuses.length > 0 && statuses.every(s => s.ready === true);
+    if (typeof readyCondition?.status === "string") attributes["k8s.pod.ready"] = readyCondition.status === "True";
+    else if (statuses.length > 0) attributes["k8s.pod.ready"] = containersReady;
+    attributes["k8s.pod.container_count"] = statuses.length;
+    attributes["k8s.pod.containers_ready"] = statuses.filter(s => s.ready === true).length;
+    if (waiting) attributes["k8s.container.waiting.reason"] = waiting;
     attributes["k8s.pod.name"] = name; attributes["k8s.pod.phase"] = phase; attributes["k8s.pod.restart_count"] = restarts; attributes["k8s.pod.reason"] = reason; attributes["k8s.node.name"] = object.spec?.nodeName; attributes["k8s.pod.ip"] = object.status?.podIP; attributes["k8s.workload.name"] = metadata.labels?.["app.kubernetes.io/name"] ?? metadata.labels?.app;
   } else if (kind === "Deployment") {
     serviceName = String(metadata.labels?.["app.kubernetes.io/name"] ?? metadata.labels?.app ?? name); const desired = object.spec?.replicas ?? 0, ready = object.status?.readyReplicas ?? 0; message = `Deployment ${name} observed: ${ready}/${desired} ready`; severity = Number(ready) < Number(desired) ? "WARN" : "INFO";
