@@ -81,74 +81,18 @@ const server = http.createServer(async (req, res) => {
         const allowedMinutes = new Set([15, 60, 360, 1440, 10080]);
         const minutes = Number(url.searchParams.get("minutes") ?? "60");
         if (!allowedMinutes.has(minutes)) return send(res, 400, { error: "invalid_time_range" });
-        // Retrieve historical anomalies separately from the latest-state view.
-        // Otherwise frequent healthy Kubernetes snapshots bury short incidents.
+        // Retain historical anomalies even after the workload returns to normal.
+        // Logs are fetched from the incident window, not mixed with Kubernetes snapshots.
         const result = await pool.query(
           `SELECT ${columns} FROM public.telemetry_events
            WHERE workspace_id = $1 AND signal_type = $2
              AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
              AND (
                $2::text = 'log'
-               OR (
-                 attributes->>'k8s.kind' = 'Deployment'
-                 AND (
-                   COALESCE(attributes->>'k8s.deployment.replicas', '') = '0'
-                   OR (
-                     (attributes->>'k8s.deployment.replicas') ~ '^[0-9]+
-         ORDER BY observed_at DESC, created_at DESC LIMIT $3`,
-        [workspace, type || null, limit]
-      );
-      return send(res, 200, { records: result.rows, count: result.rowCount });
-    }
-    if (url.pathname === "/v1/summary") {
-      const result = await pool.query(
-        `SELECT signal_type, COUNT(*)::integer AS event_count,
-                COUNT(DISTINCT service_name)::integer AS service_count,
-                MAX(observed_at) AS latest_observed_at
-         FROM public.telemetry_events
-         WHERE workspace_id = $1 AND created_at >= NOW() - INTERVAL '30 minutes'
-         GROUP BY signal_type ORDER BY signal_type`, [workspace]
-      );
-      return send(res, 200, { window_minutes: 30, signals: result.rows });
-    }
-    return send(res, 404, { error: "not_found" });
-  } catch (error) {
-    console.error("read_api_error", error?.message);
-    return send(res, 503, { error: "read_unavailable" });
-  }
-});
-server.listen(port, () => console.log(`SignalDeck read API listening on ${port}`));
-
-                     AND (attributes->>'k8s.deployment.ready_replicas') ~ '^[0-9]+
-         ORDER BY observed_at DESC, created_at DESC LIMIT $3`,
-        [workspace, type || null, limit]
-      );
-      return send(res, 200, { records: result.rows, count: result.rowCount });
-    }
-    if (url.pathname === "/v1/summary") {
-      const result = await pool.query(
-        `SELECT signal_type, COUNT(*)::integer AS event_count,
-                COUNT(DISTINCT service_name)::integer AS service_count,
-                MAX(observed_at) AS latest_observed_at
-         FROM public.telemetry_events
-         WHERE workspace_id = $1 AND created_at >= NOW() - INTERVAL '30 minutes'
-         GROUP BY signal_type ORDER BY signal_type`, [workspace]
-      );
-      return send(res, 200, { window_minutes: 30, signals: result.rows });
-    }
-    return send(res, 404, { error: "not_found" });
-  } catch (error) {
-    console.error("read_api_error", error?.message);
-    return send(res, 503, { error: "read_unavailable" });
-  }
-});
-server.listen(port, () => console.log(`SignalDeck read API listening on ${port}`));
-
-                     AND (attributes->>'k8s.deployment.ready_replicas')::integer < (attributes->>'k8s.deployment.replicas')::integer
-                   )
-                 )
-               )
-               OR (attributes->>'k8s.kind' = 'Event' AND upper(COALESCE(severity,'')) = 'ERROR')
+               OR (attributes->>'k8s.kind' = 'Deployment'
+                   AND attributes->>'k8s.deployment.replicas' = '0')
+               OR (attributes->>'k8s.kind' = 'Event'
+                   AND upper(coalesce(severity, '')) = 'ERROR')
              )
            ORDER BY observed_at DESC, created_at DESC LIMIT $4`,
           [workspace, type, minutes, limit]
