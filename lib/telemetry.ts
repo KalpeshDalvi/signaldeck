@@ -52,7 +52,7 @@ export async function saveTelemetry(records: TelemetryRecord[]) {
   return { backend: "supabase", accepted: normalized.length };
 }
 
-export async function readTelemetry(limit = 100, signalType?: SignalType, requestedWorkspace?: string, view?: "applications", traceFilters?: { minutes?: number; service?: string; errorsOnly?: boolean }) {
+export async function readTelemetry(limit = 100, signalType?: SignalType, requestedWorkspace?: string, view?: "applications" | "investigation", traceFilters?: { minutes?: number; service?: string; errorsOnly?: boolean }) {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const selectedWorkspace = workspaceId(requestedWorkspace);
   const readApiUrl = process.env.SIGNALDECK_READ_API_URL;
@@ -71,6 +71,10 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
       if (traceFilters?.minutes) endpoint.searchParams.set("minutes", String(traceFilters.minutes));
       if (traceFilters?.service) endpoint.searchParams.set("service", traceFilters.service);
       if (traceFilters?.errorsOnly) endpoint.searchParams.set("errors", "1");
+    }
+    if ((signalType === "k8s_event" || signalType === "log") && view === "investigation") {
+      endpoint.searchParams.set("view", view);
+      endpoint.searchParams.set("minutes", String(traceFilters?.minutes ?? 60));
     }
     const audience = new URL(readApiUrl).origin;
     const identityClient = await new GoogleAuth().getIdTokenClient(audience);
