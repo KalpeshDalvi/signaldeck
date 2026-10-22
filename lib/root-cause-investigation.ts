@@ -1,6 +1,7 @@
 import type { TelemetryRecord } from "./telemetry";
 
 export type RootCauseInvestigation = {
+  source: "Kubernetes" | "Application logs";
   cause: string;
   mechanism: string;
   recovery: string;
@@ -62,22 +63,29 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
   // replicas after recovery for state at the time of the incident.
   const started = incidentStartedAt ? Date.parse(incidentStartedAt) : NaN;
   const scope = new Set(serviceNames.filter(Boolean).map(s => s.toLowerCase()));
+  const failedTraces = records.filter(r =>
+    r.signal_type === "trace" &&
+    scope.has(r.service_name.toLowerCase()) &&
+    ((r.status_code ?? 0) >= 500 || r.severity?.toUpperCase() === "ERROR")
+  );
+  // Require a matching failed request close to the unhealthy Kubernetes state;
+  // the oldest failure in a window may belong to a different incident.
   const scaledToZero = records
     .filter(r =>
       r.signal_type === "k8s_event" &&
       r.attributes["k8s.kind"] === "Deployment" &&
       Number(r.attributes["k8s.deployment.replicas"]) === 0 &&
       scope.has(String(r.attributes["k8s.deployment.name"] ?? r.service_name).toLowerCase()) &&
-      Number.isFinite(started) &&
-      Math.abs(Date.parse(r.observed_at) - started) <= 3 * 60_000
+      failedTraces.some(f => Math.abs(Date.parse(f.observed_at) - Date.parse(r.observed_at)) <= 5 * 60_000)
     )
-    .sort((a, b) => Math.abs(Date.parse(a.observed_at) - started) - Math.abs(Date.parse(b.observed_at) - started));
+    .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at));
   if (scaledToZero.length > 0) {
     const k = scaledToZero[0];
     const workload = String(k.attributes["k8s.deployment.name"] ?? k.service_name);
-    const failedTrace = records.find(r => r.signal_type === "trace" &&
-      ((r.status_code ?? 0) >= 500 || r.severity?.toUpperCase() === "ERROR") &&
-      Math.abs(Date.parse(r.observed_at) - started) <= 3 * 60_000);
+    const failedTrace = [...failedTraces].sort((a,b) =>
+      Math.abs(Date.parse(a.observed_at)-Date.parse(k.observed_at)) -
+      Math.abs(Date.parse(b.observed_at)-Date.parse(k.observed_at))
+    )[0];
     const evidence = [k, ...(failedTrace ? [failedTrace] : [])].map(r => ({
       id: r.id ?? r.span_id ?? r.observed_at,
       time: r.observed_at,
@@ -88,6 +96,7 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
       traceId: r.trace_id
     }));
     return {
+      source: "Kubernetes",
       cause: `${workload} Deployment configured for zero replicas`,
       mechanism: `A Kubernetes snapshot near the failed request shows ${workload} with desired replicas set to zero. The application dependency therefore had no pods available to serve requests. This proves the observed workload state, not who or what changed the replica count.`,
       recovery: `Restore ${workload} to the approved replica count, verify Service endpoints, and repeat the failed transaction.`,
@@ -114,6 +123,7 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
     traceId:r.trace_id
   }));
   return {
+    source:"Application logs",
     cause:selected.cause, mechanism:selected.mechanism, recovery:selected.recovery,
     permanentFix:selected.permanentFix, prevention:selected.prevention, validation:selected.validation,
     evidence, limitations:"Pattern-matched log evidence supports this failure mechanism, but does not establish the originating configuration or code defect. Verify with metrics, changes, and targeted diagnostics before confirming root cause."
