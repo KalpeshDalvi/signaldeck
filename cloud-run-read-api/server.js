@@ -133,21 +133,41 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/v1/coverage") {
       const window = queryWindow(url, 60);
       if (!window) return send(res, 400, { error: "invalid_time_window" });
-      // Aggregate source coverage inside the authorized workspace. Returning
-      // counts and timestamps only avoids leaking raw logs in diagnostics.
+      // The old COUNT/GROUP BY scanned *all* historical rows and regularly
+      // exceeded statement_timeout. Use the workspace/type/time index and
+      // bounded counts instead: coverage diagnostics must never become a load test.
       const result = await pool.query(
-        `SELECT signal_type,
-                COUNT(*)::bigint AS stored_rows,
-                COUNT(*) FILTER (WHERE observed_at >= $2::timestamptz
-                                  AND observed_at <= $3::timestamptz)::bigint AS matching_rows,
-                MIN(observed_at) AS oldest_observed_at,
-                MAX(observed_at) AS newest_observed_at
-           FROM public.telemetry_events
-           WHERE workspace_id = $1
-           GROUP BY signal_type ORDER BY signal_type`,
+        `WITH types(signal_type) AS (
+           VALUES ('trace'), ('log'), ('metric'), ('k8s_event')
+         )
+         SELECT types.signal_type,
+                NULL::bigint AS stored_rows,
+                COALESCE(hits.matching_rows, 0)::bigint AS matching_rows,
+                oldest.observed_at AS oldest_observed_at,
+                newest.observed_at AS newest_observed_at
+         FROM types
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::bigint AS matching_rows FROM (
+             SELECT 1 FROM public.telemetry_events t
+             WHERE t.workspace_id = $1 AND t.signal_type = types.signal_type
+               AND t.observed_at BETWEEN $2::timestamptz AND $3::timestamptz
+             LIMIT 2001
+           ) bounded
+         ) hits ON true
+         LEFT JOIN LATERAL (
+           SELECT t.observed_at FROM public.telemetry_events t
+           WHERE t.workspace_id = $1 AND t.signal_type = types.signal_type
+           ORDER BY t.observed_at ASC LIMIT 1
+         ) oldest ON true
+         LEFT JOIN LATERAL (
+           SELECT t.observed_at FROM public.telemetry_events t
+           WHERE t.workspace_id = $1 AND t.signal_type = types.signal_type
+           ORDER BY t.observed_at DESC LIMIT 1
+         ) newest ON true
+         ORDER BY types.signal_type`,
         [workspace, window.from, window.to]
       );
-      return send(res, 200, { from: window.from, to: window.to, signals: result.rows });
+      return send(res, 200, { from: window.from, to: window.to, count_limit: 2000, signals: result.rows });
     }
     if (url.pathname === "/v1/summary") {
       const result = await pool.query(
