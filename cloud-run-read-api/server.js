@@ -198,6 +198,51 @@ const server = http.createServer(async (req, res) => {
         signals
       });
     }
+    if (url.pathname === "/v1/investigations") {
+      const rawLimit = url.searchParams.get("limit") ?? "30";
+      if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1) {
+        return send(res, 400, { error: "invalid_limit" });
+      }
+      const limit = Math.min(Number(rawLimit), 50);
+      const result = await pool.query(
+        `SELECT id,incident_key,incident_at,environment,impacted_service,
+                suspected_dependency,status,hypothesis,verified_mechanism,
+                initiating_change,initiating_actor,immediate_recovery,
+                recurrence_prevention,verification_plan,limitations,
+                created_at,updated_at
+         FROM public.investigations
+         WHERE workspace_id = $1
+         ORDER BY incident_at DESC, id DESC LIMIT $2`,
+        [workspace, limit]
+      );
+      return send(res, 200, { investigations: result.rows });
+    }
+    if (url.pathname.startsWith("/v1/investigations/")) {
+      const id = url.pathname.slice("/v1/investigations/".length);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        return send(res, 400, { error: "invalid_investigation_id" });
+      }
+      const found = await pool.query(
+        `SELECT id,incident_key,incident_at,environment,impacted_service,
+                suspected_dependency,status,hypothesis,verified_mechanism,
+                initiating_change,initiating_actor,immediate_recovery,
+                recurrence_prevention,verification_plan,limitations,
+                created_at,updated_at
+         FROM public.investigations
+         WHERE workspace_id = $1 AND id = $2::uuid LIMIT 1`,
+        [workspace, id]
+      );
+      if (!found.rowCount) return send(res, 404, { error: "investigation_not_found" });
+      const evidence = await pool.query(
+        `SELECT id,source_type,source_event_id,source_event_at,captured_at,
+                resource_name,summary,payload
+         FROM public.investigation_evidence
+         WHERE workspace_id = $1 AND investigation_id = $2::uuid
+         ORDER BY source_event_at ASC NULLS LAST, id ASC LIMIT 200`,
+        [workspace, id]
+      );
+      return send(res, 200, { investigation: found.rows[0], evidence: evidence.rows });
+    }
     if (url.pathname === "/v1/summary") {
       const result = await pool.query(
         `SELECT signal_type, COUNT(*)::integer AS event_count,
