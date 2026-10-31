@@ -68,31 +68,31 @@ const server = http.createServer(async (req, res) => {
         // Select recent application trace IDs first, then retrieve their complete span groups.
         // This prevents frequent Kubernetes probes from consuming the 500-span window.
         const result = await pool.query(
-          `WITH selected_traces AS (
-             SELECT trace_id, MAX(observed_at) AS latest
+          `WITH candidate_spans AS MATERIALIZED (
+             SELECT trace_id, observed_at
              FROM public.telemetry_events
              WHERE workspace_id = $1 AND signal_type = 'trace'
                AND trace_id IS NOT NULL
-               AND observed_at >= $3::timestamptz AND observed_at <= $6::timestamptz
-               AND ($4::text IS NULL OR trace_id IN (
-                 SELECT trace_id FROM public.telemetry_events
-                 WHERE workspace_id = $1 AND signal_type = 'trace' AND service_name = $4
-                   AND observed_at >= $3::timestamptz AND observed_at <= $6::timestamptz
-               ))
-               AND (NOT $5::boolean OR trace_id IN (
-                 SELECT trace_id FROM public.telemetry_events
-                 WHERE workspace_id = $1 AND signal_type = 'trace'
-                   AND observed_at >= $3::timestamptz AND observed_at <= $6::timestamptz
-                   AND (status_code >= 500 OR upper(coalesce(severity,'')) = 'ERROR')
-               ))
+               AND observed_at BETWEEN $3::timestamptz AND $6::timestamptz
+               AND ($4::text IS NULL OR service_name = $4)
+               AND (NOT $5::boolean OR status_code >= 500 OR upper(coalesce(severity,'')) = 'ERROR')
                AND message !~* '(healthz|readyz|livez|/health)([/?[:space:]]|$)'
-             GROUP BY trace_id ORDER BY latest DESC LIMIT 100
+             ORDER BY observed_at DESC
+             LIMIT 1000
+           ), selected_traces AS (
+             SELECT trace_id, MAX(observed_at) AS latest
+             FROM candidate_spans
+             GROUP BY trace_id
+             ORDER BY latest DESC
+             LIMIT 100
            )
            SELECT ${columns.split(",").map((column) => "t." + column).join(",")}
            FROM public.telemetry_events t
            JOIN selected_traces s ON s.trace_id = t.trace_id
            WHERE t.workspace_id = $1 AND t.signal_type = 'trace'
-           ORDER BY s.latest DESC, t.observed_at ASC LIMIT $2`,
+             AND t.observed_at BETWEEN $3::timestamptz AND $6::timestamptz
+           ORDER BY s.latest DESC, t.observed_at ASC
+           LIMIT $2`,
           [workspace, limit, window.from, service, errorsOnly, window.to]
         );
         return send(res, 200, { records: result.rows, count: result.rowCount });
