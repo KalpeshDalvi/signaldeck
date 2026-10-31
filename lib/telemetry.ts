@@ -110,6 +110,48 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
   return (await response.json()) as TelemetryRecord[];
 }
 
+export type TelemetryCoverage = {
+  from: string;
+  to: string;
+  signals: Array<{
+    signal_type: string;
+    stored_rows: string;
+    matching_rows: string;
+    oldest_observed_at: string | null;
+    newest_observed_at: string | null;
+  }>;
+};
+
+export async function readTelemetryCoverage(window: { from: string; to: string }): Promise<TelemetryCoverage | null> {
+  const base = process.env.SIGNALDECK_READ_API_URL;
+  const key = process.env.SIGNALDECK_READ_API_KEY;
+  if (!base || !key) return null;
+  const endpoint = new URL("/v1/coverage", base);
+  endpoint.searchParams.set("from", window.from);
+  endpoint.searchParams.set("to", window.to);
+  try {
+    const audience = new URL(base).origin;
+    const identity = await new GoogleAuth().getIdTokenClient(audience);
+    const headers = await identity.getRequestHeaders(audience);
+    const token = headers.Authorization ?? headers.authorization;
+    if (!token) return null;
+    const response = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${key}`, "X-Serverless-Authorization": token },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      console.error("SignalDeck historical coverage unavailable", response.status);
+      return null;
+    }
+    const result = await response.json() as TelemetryCoverage;
+    return Array.isArray(result.signals) ? result : null;
+  } catch (error) {
+    console.error("SignalDeck historical coverage request failed", error instanceof Error ? error.name : "unknown");
+    return null;
+  }
+}
+
 export function verifyIngestionKey(request: Request) {
   const expected = process.env.SIGNALDECK_INGESTION_KEY;
   return Boolean(expected) && request.headers.get("authorization") === `Bearer ${expected}`;
