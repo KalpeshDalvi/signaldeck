@@ -1,49 +1,44 @@
 # SignalDeck
 
-OpenTelemetry-native observability dashboard for GCP and GKE environments.
+SignalDeck is an OpenTelemetry-native observability and incident-investigation prototype built around GKE, Cloud Run, and Cloud SQL PostgreSQL.
 
-## Current milestone
+## Architecture
 
-The repository contains the first runnable Next.js dashboard with:
+- **GKE lab workloads:** checkout, inventory, and a traffic generator.
+- **OpenTelemetry Collector:** OTLP traces and Kubernetes object/event telemetry.
+- **Cloud Run `signaldeck-ingest`:** validates incoming telemetry and writes to Cloud SQL.
+- **Cloud SQL PostgreSQL:** raw `telemetry_events`, with an optional independent investigation archive.
+- **Cloud Run `signaldeck-read-api`:** authenticated, workspace-scoped telemetry and archive retrieval.
+- **Cloud Run `signaldeck-dashboard`:** service health, traces, Kubernetes, alerts, incident correlation, historical audit investigation, and saved investigations.
+- **GKE Cloud Audit Logs:** read-only investigation of Deployment changes and authenticated API operations.
 
-- Production health overview
-- Service golden signals
-- GKE cluster capacity
-- Incident activity
-- Distributed trace visualization
-- Health-check API
+## Development status
 
-The current data is simulated. Real OpenTelemetry ingestion, authentication, persistence, and GCP onboarding will be added incrementally.
+**Working in the lab:** distributed checkout-to-inventory tracing; Kubernetes state views; evidence-driven correlation hypotheses; historical GKE scale-to-zero API investigation, initiating identity, and prevention suggestions.
 
-## Run locally
+**Milestone 3 (code written, rollout pending):** automatically preserve newly ingested error spans, high-severity application logs (if collected), zero-replica Deployment snapshots (if observed), and Kubernetes warning events to a durable investigation/evidence archive. The feature is disabled until the migration is applied and `SIGNALDECK_ARCHIVE_ENABLED=true` is configured.
 
-Requirements: Node.js 20 or newer.
+**Not yet complete:** automatic Cloud Audit Logs snapshots into the durable archive, incident grouping across long-running outages, verified AI root-cause analysis, comprehensive error-log collection, production-grade tenant isolation/retention/PII controls, and proactive user notifications.
 
-```bash
-npm install
-npm run dev
+The archive preserves only qualifying events **received after it is enabled**; it cannot restore expired October 22 raw telemetry.
+
+## Build and test (PowerShell)
+
+```powershell
+cd F:\signaldeck
+node --check .\cloud-run-ingest\server.js
+node --check .\cloud-run-ingest\investigation-archive.js
+node --check .\cloud-run-read-api\server.js
+node --test .\cloud-run-ingest\test\archive.test.mjs
+npm.cmd run build
 ```
 
-Open `http://localhost:3000`.
+Detailed migration and deployment instructions: [Milestone 3 deployment runbook](docs/milestone-3-deployment.md).
 
-Health endpoint:
+## Raw telemetry retention
 
-```text
-http://localhost:3000/api/health
-```
+`cloud-sql/migrations/002_telemetry_retention.sql` defines a seven-day cleanup procedure, but defining a procedure is not proof it was scheduled or executed. `cloud-sql/migrations/003_durable_investigations.sql` defines an independently retained archive schema. Migrations are not applied automatically.
 
-## Production build
+## Primary product goal
 
-```bash
-npm run build
-npm start
-```
-
-## Roadmap
-
-1. Application shell and mock observability experience
-2. Persistent workspace and user authentication
-3. OTLP ingestion gateway and OpenTelemetry Collector configuration
-4. GKE inventory, metrics, logs, traces, and events
-5. Alert rules and incident investigation
-6. Multi-tenant SaaS controls and usage metering
+Detect the symptom, retrieve relevant application/dependency/infrastructure evidence, reconstruct a verifiable cause chain, identify initiating changes, and recommend an immediate recovery plus a separately validated recurrence-prevention measure. Clearly label unverified hypotheses and missing evidence; never claim causality merely because events overlap in time.
