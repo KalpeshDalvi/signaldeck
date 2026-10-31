@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 const links = [
   ["Overview", "/"],
   ["Incidents", "/incidents"],
+  ["Saved investigations", "/investigations"],
   ["Correlation", "/correlation"],
   ["Services", "/services"],
   ["Kubernetes", "/kubernetes"],
