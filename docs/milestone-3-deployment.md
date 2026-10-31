@@ -77,7 +77,7 @@ gcloud.cmd run services update signaldeck-ingest `
   --update-env-vars=SIGNALDECK_ARCHIVE_ENABLED=true
 ```
 
-This is an explicit opt-in. Normal telemetry ingestion uses its preexisting database path when false; no feature flag is needed for read-only archive access. If an archive insert fails after enabling, the batch will return 503 and roll back, and the collector may retry.
+This is an explicit opt-in. Normal telemetry ingestion uses its preexisting database path when false; no feature flag is needed for read-only archive access. When enabled, the ingestion service `/ready` endpoint checks both new tables and its database privileges. If an archive insert fails, the batch will return 503 and roll back, and the collector may retry. Do not enable the feature if the readiness or archive test fails.
 
 Rollback without deleting any archive data:
 
