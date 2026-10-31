@@ -1,6 +1,7 @@
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import pg from "pg";
+import { archiveBatch } from "./investigation-archive.js";
 
 const PORT = Number(process.env.PORT || 8080);
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -12,6 +13,8 @@ const WORKSPACE_ID = process.env.SIGNALDECK_WORKSPACE_ID || "default";
 const dbConfig = DATABASE_URL ? {connectionString:DATABASE_URL} : {host:PGHOST, database:PGDATABASE, user:PGUSER, password:PGPASSWORD};
 const pool = new pg.Pool({...dbConfig, max:3, idleTimeoutMillis:30000, connectionTimeoutMillis:5000, statement_timeout:10000});
 const INGESTION_KEY = process.env.SIGNALDECK_INGESTION_KEY;
+// Enable only after 003_durable_investigations.sql is applied and verified.
+const ARCHIVE_ENABLED = process.env.SIGNALDECK_ARCHIVE_ENABLED === "true";
 
 if (!(DATABASE_URL || (PGHOST && PGDATABASE && PGUSER && PGPASSWORD)) || !INGESTION_KEY) {
   console.error("Missing database connection settings or SIGNALDECK_INGESTION_KEY");
@@ -106,7 +109,29 @@ async function save(records) {
     tuples.push("("+row.map((_,j)=>"$"+(offset+j+1)).join(",")+")");
   });
   const sql="INSERT INTO telemetry_events ("+FIELDS.join(",")+") VALUES "+tuples.join(",");
-  await pool.query(sql,params);
+  if (!ARCHIVE_ENABLED) {
+    await pool.query(sql,params);
+    return;
+  }
+  // Archive and raw telemetry must commit together: retry cannot report
+  // successful ingestion while silently losing the evidence snapshot.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(sql, params);
+    const archived = await archiveBatch(client, records, WORKSPACE_ID);
+    if (archived.omitted > 0) {
+      console.error("signaldeck_archive_batch_capped", archived.omitted);
+      // Never acknowledge incomplete archive as successful ingestion.
+      throw new Error("archive_evidence_limit_exceeded");
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    try { await client.query("ROLLBACK"); } catch {}
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 async function readBody(req) {
   const chunks=[];let size=0;
