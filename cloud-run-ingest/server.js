@@ -146,7 +146,26 @@ async function readBody(req) {
 const server = http.createServer(async (req,res)=>{
   try {
     if (req.method === "GET" && (req.url === "/health" || req.url === "/healthz")) return json(res,200,{status:"ok"});
-    if (req.method === "GET" && req.url === "/ready") {await pool.query("SELECT 1");return json(res,200,{status:"ready"});}
+    if (req.method === "GET" && req.url === "/ready") {
+      await pool.query("SELECT 1");
+      if (ARCHIVE_ENABLED) {
+        const tables = await pool.query(
+          "SELECT to_regclass('public.investigations') AS investigations, " +
+          "to_regclass('public.investigation_evidence') AS evidence"
+        );
+        if (!tables.rows[0]?.investigations || !tables.rows[0]?.evidence) {
+          return json(res, 503, { status: "not_ready", reason: "archive_schema_missing" });
+        }
+        const permissions = await pool.query(
+          "SELECT has_table_privilege(current_user, 'public.investigations', 'SELECT,INSERT,UPDATE') AS investigations_write, " +
+          "has_table_privilege(current_user, 'public.investigation_evidence', 'INSERT') AS evidence_write"
+        );
+        if (!permissions.rows[0]?.investigations_write || !permissions.rows[0]?.evidence_write) {
+          return json(res, 503, { status: "not_ready", reason: "archive_permission_missing" });
+        }
+      }
+      return json(res, 200, {status: "ready", archive_enabled: ARCHIVE_ENABLED});
+    }
     if (req.method !== "POST") return json(res,405,{error:"method_not_allowed"});
     if (!authorized(req.headers.authorization)) return json(res,401,{error:"unauthorized"});
     const bodyText = await readBody(req); const payload = bodyText ? JSON.parse(bodyText) : {};
