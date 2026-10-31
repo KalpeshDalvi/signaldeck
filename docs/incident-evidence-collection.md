@@ -99,3 +99,17 @@ Observed lab audit sequence (UTC, October 22, 2026):
 An audit timeline demonstrates what was changed, who requested the API operation and what happened afterward. It does not establish the human intent or upstream process responsible for issuing the request. SignalDeck should explicitly preserve that distinction.
 
 Verification: after rebuilding and deploying the dashboard, open `/correlation?minutes=360`. The Kubernetes audit section should show the scale operations if the runtime identity is authorized and Cloud Logging retains the entries. A lack of results is not equivalent to proof that no scale operation happened.
+
+## Point-in-time historical incident investigation
+
+Rolling windows are measured backward from **now**; a recovered incident from October 22 is not visible in a 6-hour or 7-day rolling window on October 31. The Correlation page accepts `?at=<UTC ISO timestamp>` to query an hour centered on a historical event, with a maximum age of 90 days (data retention may be shorter).
+
+Lab example:
+
+```
+/correlation?at=2026-10-22T17%3A29%3A08Z
+```
+
+The history mode retrieves traces, failures, application logs, Kubernetes snapshots and Kubernetes anomalies using explicit bounded timestamps; it does not use the current latest-500 state as historical proof. The read API enforces a maximum historical query span of two hours, a maximum age of 90 days and the existing workspace isolation. The dashboard's Kubernetes audit lookup must also permit this age. Do not describe a historical incident as actively occurring without new evidence.
+
+Deploy the updated read API first, using `--source=.\\cloud-run-read-api` while keeping its existing environment variables and secrets; then deploy the dashboard with its existing service account, read API configuration and secret settings. Check `node --check .\\cloud-run-read-api\\server.js` before redeploying, followed by `npm.cmd run build`. The feature is not live until **both** revisions are healthy.
