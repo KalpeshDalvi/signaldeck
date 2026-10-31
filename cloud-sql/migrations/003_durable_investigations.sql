@@ -69,7 +69,7 @@ BEGIN
       FOREIGN KEY (investigation_id,workspace_id)
       REFERENCES public.investigations(id,workspace_id);
   END IF;
-END
+END;
 $migration$;
 
 COMMIT;
