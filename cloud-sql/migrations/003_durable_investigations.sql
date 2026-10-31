@@ -55,12 +55,22 @@ CREATE INDEX IF NOT EXISTS investigation_evidence_workspace_idx
 
 -- Ensure a row's workspace agrees with its parent investigation.
 -- PostgreSQL does not infer this from separate foreign keys.
-ALTER TABLE public.investigations
-  ADD CONSTRAINT investigations_id_workspace_unique UNIQUE (id,workspace_id);
-ALTER TABLE public.investigation_evidence
-  ADD CONSTRAINT investigation_evidence_same_workspace
-    FOREIGN KEY (investigation_id,workspace_id)
-    REFERENCES public.investigations(id,workspace_id);
+CREATE UNIQUE INDEX IF NOT EXISTS investigations_id_workspace_uix
+  ON public.investigations(id,workspace_id);
+DO $migration$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='investigation_evidence_same_workspace'
+      AND conrelid='public.investigation_evidence'::regclass
+  ) THEN
+    ALTER TABLE public.investigation_evidence
+      ADD CONSTRAINT investigation_evidence_same_workspace
+      FOREIGN KEY (investigation_id,workspace_id)
+      REFERENCES public.investigations(id,workspace_id);
+  END IF;
+END
+$migration$;
 
 COMMIT;
 
