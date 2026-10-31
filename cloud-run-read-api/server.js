@@ -166,26 +166,19 @@ const server = http.createServer(async (req, res) => {
             await client.query("BEGIN READ ONLY");
             await client.query("SET LOCAL statement_timeout = 1200");
             const probe = await client.query(
-              `SELECT EXISTS (
-                 SELECT 1 FROM public.telemetry_events
-                 WHERE workspace_id = $1 AND signal_type = $2
-                   AND observed_at >= $3::timestamptz AND observed_at <= $4::timestamptz
-                 LIMIT 1
-               ) AS match_found,
-               (SELECT observed_at FROM public.telemetry_events
-                 WHERE workspace_id = $1 AND signal_type = $2
-                 ORDER BY observed_at ASC LIMIT 1) AS oldest_observed_at,
-               (SELECT observed_at FROM public.telemetry_events
-                 WHERE workspace_id = $1 AND signal_type = $2
-                 ORDER BY observed_at DESC LIMIT 1) AS newest_observed_at`,
+              `SELECT observed_at FROM public.telemetry_events
+               WHERE workspace_id = $1 AND signal_type = $2
+                 AND observed_at >= $3::timestamptz
+                 AND observed_at <= $4::timestamptz
+               ORDER BY observed_at DESC LIMIT 1`,
               [workspace, signal_type, window.from, window.to]
             );
             await client.query("COMMIT");
-            const item = probe.rows[0];
+            const found = probe.rowCount > 0;
             signals.push({
-              signal_type, probe_status: item.match_found ? "found" : "not_found",
-              match_found: item.match_found, oldest_observed_at: item.oldest_observed_at,
-              newest_observed_at: item.newest_observed_at
+              signal_type, probe_status: found ? "found" : "not_found",
+              match_found: found, oldest_observed_at: null,
+              newest_observed_at: null
             });
           } catch (error) {
             try { await client.query("ROLLBACK"); } catch {}
