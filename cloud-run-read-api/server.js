@@ -133,41 +133,77 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/v1/coverage") {
       const window = queryWindow(url, 60);
       if (!window) return send(res, 400, { error: "invalid_time_window" });
-      // The old COUNT/GROUP BY scanned *all* historical rows and regularly
-      // exceeded statement_timeout. Use the workspace/type/time index and
-      // bounded counts instead: coverage diagnostics must never become a load test.
-      const result = await pool.query(
-        `WITH types(signal_type) AS (
-           VALUES ('trace'), ('log'), ('metric'), ('k8s_event')
-         )
-         SELECT types.signal_type,
-                NULL::bigint AS stored_rows,
-                COALESCE(hits.matching_rows, 0)::bigint AS matching_rows,
-                oldest.observed_at AS oldest_observed_at,
-                newest.observed_at AS newest_observed_at
-         FROM types
-         LEFT JOIN LATERAL (
-           SELECT COUNT(*)::bigint AS matching_rows FROM (
-             SELECT 1 FROM public.telemetry_events t
-             WHERE t.workspace_id = $1 AND t.signal_type = types.signal_type
-               AND t.observed_at BETWEEN $2::timestamptz AND $3::timestamptz
-             LIMIT 2001
-           ) bounded
-         ) hits ON true
-         LEFT JOIN LATERAL (
-           SELECT t.observed_at FROM public.telemetry_events t
-           WHERE t.workspace_id = $1 AND t.signal_type = types.signal_type
-           ORDER BY t.observed_at ASC LIMIT 1
-         ) oldest ON true
-         LEFT JOIN LATERAL (
-           SELECT t.observed_at FROM public.telemetry_events t
-           WHERE t.workspace_id = $1 AND t.signal_type = types.signal_type
-           ORDER BY t.observed_at DESC LIMIT 1
-         ) newest ON true
-         ORDER BY types.signal_type`,
-        [workspace, window.from, window.to]
+      const kinds = ["trace", "log", "metric", "k8s_event"];
+      // Catalog-only index check. Diagnostics must not issue a table-wide scan.
+      const indexes = await pool.query(
+        `SELECT idx.relname AS index_name, i.indisvalid AS valid,
+                i.indisready AS ready, pg_get_indexdef(idx.oid) AS definition
+         FROM pg_index i
+         JOIN pg_class idx ON idx.oid = i.indexrelid
+         JOIN pg_class tbl ON tbl.oid = i.indrelid
+         JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+         WHERE ns.nspname = 'public' AND tbl.relname = 'telemetry_events'`
       );
-      return send(res, 200, { from: window.from, to: window.to, count_limit: 2000, signals: result.rows });
+      const hasIndex = indexes.rows.some(i =>
+        i.valid && i.ready &&
+        String(i.definition).toLowerCase().includes("(workspace_id, signal_type, observed_at")
+      );
+      if (!hasIndex) return send(res, 200, {
+        from: window.from, to: window.to, status: "index_missing",
+        index_ready: false,
+        signals: kinds.map(signal_type => ({
+          signal_type, probe_status: "not_checked", match_found: null,
+          oldest_observed_at: null, newest_observed_at: null
+        }))
+      });
+      const client = await pool.connect();
+      const signals = [];
+      try {
+        // One read-only transaction per type; each has an independent
+        // 1.2-second statement cap instead of the global 8-second timeout.
+        for (const signal_type of kinds) {
+          try {
+            await client.query("BEGIN READ ONLY");
+            await client.query("SET LOCAL statement_timeout = 1200");
+            const probe = await client.query(
+              `SELECT EXISTS (
+                 SELECT 1 FROM public.telemetry_events
+                 WHERE workspace_id = $1 AND signal_type = $2
+                   AND observed_at >= $3::timestamptz AND observed_at <= $4::timestamptz
+                 LIMIT 1
+               ) AS match_found,
+               (SELECT observed_at FROM public.telemetry_events
+                 WHERE workspace_id = $1 AND signal_type = $2
+                 ORDER BY observed_at ASC LIMIT 1) AS oldest_observed_at,
+               (SELECT observed_at FROM public.telemetry_events
+                 WHERE workspace_id = $1 AND signal_type = $2
+                 ORDER BY observed_at DESC LIMIT 1) AS newest_observed_at`,
+              [workspace, signal_type, window.from, window.to]
+            );
+            await client.query("COMMIT");
+            const item = probe.rows[0];
+            signals.push({
+              signal_type, probe_status: item.match_found ? "found" : "not_found",
+              match_found: item.match_found, oldest_observed_at: item.oldest_observed_at,
+              newest_observed_at: item.newest_observed_at
+            });
+          } catch (error) {
+            try { await client.query("ROLLBACK"); } catch {}
+            console.error("coverage_probe_error", signal_type, error?.code ?? "unknown");
+            signals.push({
+              signal_type, probe_status: error?.code === "57014" ? "timed_out" : "unavailable",
+              match_found: null, oldest_observed_at: null, newest_observed_at: null
+            });
+          }
+        }
+      } finally {
+        client.release();
+      }
+      return send(res, 200, {
+        from: window.from, to: window.to, index_ready: true,
+        status: signals.every(s => s.match_found !== null) ? "complete" : "partial",
+        signals
+      });
     }
     if (url.pathname === "/v1/summary") {
       const result = await pool.query(
