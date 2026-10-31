@@ -51,7 +51,7 @@ export async function findGkeDeploymentChanges(input: {
     return { status: "not_configured", changes: [] };
   }
   const time = Date.parse(input.failureAt);
-  if (!Number.isFinite(time) || time > Date.now() + 60_000 || time < Date.now() - 8 * 24 * 60 * 60_000) {
+  if (!Number.isFinite(time) || time > Date.now() + 60_000 || time < Date.now() - 90 * 24 * 60 * 60_000) {
     return { status: "not_configured", changes: [] };
   }
   const start = new Date(time - 5 * 60_000).toISOString();
