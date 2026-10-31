@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 
 // Automatic capture is deliberately conservative: record observed failures,
 // never infer a confirmed root cause or ingest arbitrary log attributes.
-const MAX_INCIDENTS_PER_BATCH = 20;
-const MAX_EVIDENCE_PER_BATCH = 80;
+const MAX_INCIDENTS_PER_BATCH = 500;
+const MAX_EVIDENCE_PER_BATCH = 500;
 const BUCKET_MS = 5 * 60 * 1000;
 const MAX_EVENT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const SAFE_LABEL = /^[a-zA-Z0-9_.:-]{1,128}$/;
@@ -107,24 +107,31 @@ export function planArchive(records, now = Date.now()) {
 export async function archiveBatch(client, records, workspaceId) {
   const plan = planArchive(records);
   if (!plan.investigations.length) return { captured: 0, investigations: 0, omitted: 0 };
-  const idByKey = new Map();
+  // One batch UPSERT, not one query per incident. Keep the hot OTLP path
+  // bounded even if all 500 records are distinct failures.
+  const incidentParams = [];
+  const incidentPlaceholders = [];
+  let incidentParamIndex = 1;
   for (const item of plan.investigations) {
-    const result = await client.query(
-      `INSERT INTO public.investigations (
-        workspace_id, incident_key, incident_at, environment, impacted_service,
-        status, hypothesis, limitations
-      ) VALUES ($1,$2,$3,$4,$5,'investigating',$6,$7)
-      ON CONFLICT (workspace_id, incident_key)
-      DO UPDATE SET updated_at = now()
-      RETURNING id`,
-      [workspaceId, item.key, item.observedAt, item.environment, item.service,
-       item.kind === "kubernetes_unavailable"
-         ? "Deployment observed with zero desired replicas; initiator unknown"
-         : "Failure signal observed; underlying cause is not yet verified",
-       "Automatic capture preserves observed evidence only. Do not treat the hypothesis as a confirmed root cause."]
+    incidentParams.push(
+      workspaceId, item.key, item.observedAt, item.environment, item.service,
+      item.kind === "kubernetes_unavailable"
+        ? "Deployment observed with zero desired replicas; initiator unknown"
+        : "Failure signal observed; underlying cause is not yet verified",
+      "Automatic capture preserves observed evidence only. The originating cause is not independently established."
     );
-    idByKey.set(item.key, result.rows[0].id);
+    incidentPlaceholders.push("(" + Array.from({length:7}, () => "$" + incidentParamIndex++).join(",") + ")");
   }
+  const saved = await client.query(
+    `INSERT INTO public.investigations (
+      workspace_id,incident_key,incident_at,environment,impacted_service,hypothesis,limitations
+    ) VALUES ${incidentPlaceholders.join(",")}
+    ON CONFLICT (workspace_id,incident_key)
+      DO UPDATE SET updated_at = now()
+    RETURNING id,incident_key`,
+    incidentParams
+  );
+  const idByKey = new Map(saved.rows.map(row => [row.incident_key, row.id]));
   const fields = [];
   const placeholders = [];
   let idx = 1;
