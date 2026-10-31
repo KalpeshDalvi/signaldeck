@@ -23,13 +23,17 @@ export async function readInvestigationEvidence(
   const historical = at ? historicalInvestigationWindow(at) : null;
   if (at && !historical) throw new Error("Invalid historical incident timestamp");
   const filters = historical ? { minutes: 60, ...historical } : { minutes };
-  const [applicationSpans, failingSpans, applicationLogs, kubernetesRecords, historicalAnomalies] = await Promise.all([
+  // The read API uses a deliberately small Cloud SQL connection pool.
+  // Limit one investigation to two concurrent reads to avoid exhausting it.
+  const [applicationSpans, failingSpans] = await Promise.all([
     readTelemetry(500, "trace", undefined, "applications", filters),
     readTelemetry(500, "trace", undefined, "applications", { ...filters, errorsOnly: true }),
+  ]);
+  const [applicationLogs, kubernetesRecords] = await Promise.all([
     readTelemetry(500, "log", undefined, historical ? "history" : "investigation", filters),
     readTelemetry(500, "k8s_event", undefined, historical ? "history" : undefined, historical ? filters : undefined),
-    readTelemetry(500, "k8s_event", undefined, "investigation", filters),
   ]);
+  const historicalAnomalies = await readTelemetry(500, "k8s_event", undefined, "investigation", filters);
 
   const cutoff = historical ? Date.parse(historical.from) : Date.now() - minutes * MINUTE;
   const upper = historical ? Date.parse(historical.to) : Date.now() + 5 * MINUTE;
