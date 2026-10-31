@@ -113,9 +113,10 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
 export type TelemetryCoverage = {
   from: string;
   to: string;
+  count_limit?: number;
   signals: Array<{
     signal_type: string;
-    stored_rows: string;
+    stored_rows: string | null;
     matching_rows: string;
     oldest_observed_at: string | null;
     newest_observed_at: string | null;
