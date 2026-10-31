@@ -37,8 +37,19 @@ function candidateRecords(records: TelemetryRecord[], service: ServiceSummary) {
   return [...tracePath, ...support];
 }
 
-export function clusterIncidentCandidates(records: TelemetryRecord[]): IncidentCandidate[] {
-  const services = summarizeServices(records).filter((service) => service.status !== "Healthy");
+export function clusterIncidentCandidates(records: TelemetryRecord[], options?: { includeAnyFailedTrace?: boolean }): IncidentCandidate[] {
+  // Historical incident investigation must preserve real failed traces even if
+  // successful requests later dilute the aggregate error rate for the hour.
+  // Live health pages continue to use their existing golden-signal thresholds.
+  const services = summarizeServices(records).filter((service) =>
+    service.status !== "Healthy" ||
+    (options?.includeAnyFailedTrace === true && records.some((record) =>
+      record.signal_type === "trace" &&
+      record.service_name === service.name &&
+      record.environment === service.environment &&
+      isFailure(record)
+    ))
+  );
   const candidates: IncidentCandidate[] = [];
 
   for (const service of services) {
