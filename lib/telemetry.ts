@@ -113,11 +113,12 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
 export type TelemetryCoverage = {
   from: string;
   to: string;
-  count_limit?: number;
+  status: "complete" | "partial" | "index_missing";
+  index_ready: boolean;
   signals: Array<{
     signal_type: string;
-    stored_rows: string | null;
-    matching_rows: string;
+    probe_status: "found" | "not_found" | "timed_out" | "unavailable" | "not_checked";
+    match_found: boolean | null;
     oldest_observed_at: string | null;
     newest_observed_at: string | null;
   }>;
