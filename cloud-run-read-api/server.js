@@ -130,6 +130,25 @@ const server = http.createServer(async (req, res) => {
       );
       return send(res, 200, { records: result.rows, count: result.rowCount });
     }
+    if (url.pathname === "/v1/coverage") {
+      const window = queryWindow(url, 60);
+      if (!window) return send(res, 400, { error: "invalid_time_window" });
+      // Aggregate source coverage inside the authorized workspace. Returning
+      // counts and timestamps only avoids leaking raw logs in diagnostics.
+      const result = await pool.query(
+        `SELECT signal_type,
+                COUNT(*)::bigint AS stored_rows,
+                COUNT(*) FILTER (WHERE observed_at >= $2::timestamptz
+                                  AND observed_at <= $3::timestamptz)::bigint AS matching_rows,
+                MIN(observed_at) AS oldest_observed_at,
+                MAX(observed_at) AS newest_observed_at
+           FROM public.telemetry_events
+           WHERE workspace_id = $1
+           GROUP BY signal_type ORDER BY signal_type`,
+        [workspace, window.from, window.to]
+      );
+      return send(res, 200, { from: window.from, to: window.to, signals: result.rows });
+    }
     if (url.pathname === "/v1/summary") {
       const result = await pool.query(
         `SELECT signal_type, COUNT(*)::integer AS event_count,
