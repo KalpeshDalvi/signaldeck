@@ -25,6 +25,24 @@ function authorized(header) {
 }
 const columns = "id,workspace_id,signal_type,service_name,environment,severity,message,trace_id,span_id,parent_span_id,duration_ms,status_code,attributes,observed_at,created_at";
 const types = new Set(["log", "trace", "metric", "k8s_event"]);
+
+// Historical queries are bounded to 2h and 90d to protect latency and data scope.
+function queryWindow(url, minutes) {
+  const fromRaw = url.searchParams.get("from");
+  const toRaw = url.searchParams.get("to");
+  const now = Date.now();
+  if (fromRaw !== null || toRaw !== null) {
+    const isoUtc = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+    if (!fromRaw || !toRaw || !isoUtc.test(fromRaw) || !isoUtc.test(toRaw)) return null;
+    const from = Date.parse(fromRaw), to = Date.parse(toRaw);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to ||
+        to - from > 2 * 60 * 60_000 || to > now + 60_000 ||
+        from < now - 90 * 24 * 60 * 60_000) return null;
+    return { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+  }
+  return { from: new Date(now - minutes * 60_000).toISOString(), to: new Date(now).toISOString() };
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
@@ -42,6 +60,8 @@ const server = http.createServer(async (req, res) => {
         const allowedMinutes = new Set([15, 60, 360, 1440, 10080]);
         const minutes = Number(url.searchParams.get("minutes") ?? "60");
         if (!allowedMinutes.has(minutes)) return send(res, 400, { error: "invalid_time_range" });
+        const window = queryWindow(url, minutes);
+        if (!window) return send(res, 400, { error: "invalid_time_window" });
         const service = url.searchParams.get("service") || null;
         if (service && (service.length > 128 || !/^[a-zA-Z0-9_.-]+$/.test(service))) return send(res, 400, { error: "invalid_service" });
         const errorsOnly = url.searchParams.get("errors") === "1";
@@ -53,16 +73,16 @@ const server = http.createServer(async (req, res) => {
              FROM public.telemetry_events
              WHERE workspace_id = $1 AND signal_type = 'trace'
                AND trace_id IS NOT NULL
-               AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
+               AND observed_at >= $3::timestamptz AND observed_at <= $6::timestamptz
                AND ($4::text IS NULL OR trace_id IN (
                  SELECT trace_id FROM public.telemetry_events
                  WHERE workspace_id = $1 AND signal_type = 'trace' AND service_name = $4
-                   AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
+                   AND observed_at >= $3::timestamptz AND observed_at <= $6::timestamptz
                ))
                AND (NOT $5::boolean OR trace_id IN (
                  SELECT trace_id FROM public.telemetry_events
                  WHERE workspace_id = $1 AND signal_type = 'trace'
-                   AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
+                   AND observed_at >= $3::timestamptz AND observed_at <= $6::timestamptz
                    AND (status_code >= 500 OR upper(coalesce(severity,'')) = 'ERROR')
                ))
                AND message !~* '(healthz|readyz|livez|/health)([/?[:space:]]|$)'
@@ -73,29 +93,32 @@ const server = http.createServer(async (req, res) => {
            JOIN selected_traces s ON s.trace_id = t.trace_id
            WHERE t.workspace_id = $1 AND t.signal_type = 'trace'
            ORDER BY s.latest DESC, t.observed_at ASC LIMIT $2`,
-          [workspace, limit, minutes, service, errorsOnly]
+          [workspace, limit, window.from, service, errorsOnly, window.to]
         );
         return send(res, 200, { records: result.rows, count: result.rowCount });
       }
-      if ((type === "k8s_event" || type === "log") && url.searchParams.get("view") === "investigation") {
+      if ((type === "k8s_event" || type === "log") && ["investigation", "history"].includes(url.searchParams.get("view"))) {
         const allowedMinutes = new Set([15, 60, 360, 1440, 10080]);
         const minutes = Number(url.searchParams.get("minutes") ?? "60");
         if (!allowedMinutes.has(minutes)) return send(res, 400, { error: "invalid_time_range" });
+        const window = queryWindow(url, minutes);
+        if (!window) return send(res, 400, { error: "invalid_time_window" });
         // Retain historical anomalies even after the workload returns to normal.
         // Logs are fetched from the incident window, not mixed with Kubernetes snapshots.
         const result = await pool.query(
           `SELECT ${columns} FROM public.telemetry_events
            WHERE workspace_id = $1 AND signal_type = $2
-             AND observed_at >= NOW() - ($3::integer * INTERVAL '1 minute')
+             AND observed_at >= $3::timestamptz AND observed_at <= $5::timestamptz
              AND (
-               $2::text = 'log'
+               $6::boolean = false
+               OR $2::text = 'log'
                OR (attributes->>'k8s.kind' = 'Deployment'
                    AND attributes->>'k8s.deployment.replicas' = '0')
                OR (attributes->>'k8s.kind' = 'Event'
                    AND upper(coalesce(severity, '')) = 'ERROR')
              )
            ORDER BY observed_at DESC, created_at DESC LIMIT $4`,
-          [workspace, type, minutes, limit]
+          [workspace, type, window.from, limit, window.to, url.searchParams.get("view") === "investigation"]
         );
         return send(res, 200, { records: result.rows, count: result.rowCount });
       }
