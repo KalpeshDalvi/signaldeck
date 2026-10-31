@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planArchive } from "../investigation-archive.js";
+import { planArchive, archiveBatch } from "../investigation-archive.js";
 
 const NOW = Date.parse("2026-10-31T18:00:00.000Z");
 const at = "2026-10-31T17:58:12.000Z";
@@ -71,4 +71,45 @@ test("stale/future and invalid service events are not auto-archived", () => {
     { ...base, signal_type: "trace", status_code: 500, service_name: "invalid name" }
   ];
   assert.equal(planArchive(records, NOW).evidence.length, 0);
+});
+
+test("multiple failed spans in one time bucket share an investigation but keep distinct evidence", () => {
+  const planned = planArchive([
+    { ...base, signal_type: "trace", status_code: 500, message: "POST /checkout", trace_id: "trace-a", span_id: "span-a" },
+    { ...base, signal_type: "trace", status_code: 502, message: "POST /checkout", trace_id: "trace-b", span_id: "span-b" }
+  ], NOW);
+  assert.equal(planned.investigations.length, 1);
+  assert.equal(planned.evidence.length, 2);
+  assert.notEqual(planned.evidence[0].sourceEventId, planned.evidence[1].sourceEventId);
+});
+
+test("archiveBatch uses a batched investigation upsert and a batched evidence insert", async () => {
+  const statements = [];
+  const client = { async query(sql, params) {
+    statements.push({ sql, params });
+    if (sql.includes("INSERT INTO public.investigations")) {
+      const key = params[1];
+      return { rows: [{ id: "33333333-3333-4333-8333-333333333333", incident_key: key }] };
+    }
+    return { rowCount: 1, rows: [] };
+  }};
+  const records = [{...base, signal_type: "trace", status_code: 500,
+    trace_id: "t3", span_id: "s3", message: "POST /checkout"}];
+  const result = await archiveBatch(client, records, "default");
+  assert.equal(result.captured, 1);
+  assert.equal(result.investigations, 1);
+  assert.equal(statements.length, 2);
+  assert.match(statements[0].sql, /ON CONFLICT \(workspace_id,incident_key\)/);
+  assert.match(statements[1].sql, /ON CONFLICT \(investigation_id, source_type, source_event_id\) DO NOTHING/);
+});
+
+test("OTLP-sized failure batch preserves all 500 distinct source events", () => {
+  const records = Array.from({length: 500}, (_, i) => ({
+    ...base, signal_type: "trace", severity: "ERROR",
+    status_code: 500, message: "POST /checkout",
+    trace_id: "trace-"+i, span_id: "span-"+i
+  }));
+  const planned = planArchive(records, NOW);
+  assert.equal(planned.evidence.length, 500);
+  assert.equal(planned.omitted, 0);
 });
