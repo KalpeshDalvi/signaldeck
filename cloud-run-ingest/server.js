@@ -157,7 +157,9 @@ const server = http.createServer(async (req,res)=>{
           return json(res, 503, { status: "not_ready", reason: "archive_schema_missing" });
         }
         const permissions = await pool.query(
-          "SELECT has_table_privilege(current_user, 'public.investigations', 'SELECT,INSERT,UPDATE') AS investigations_write, " +
+          "SELECT (has_table_privilege(current_user, 'public.investigations', 'SELECT') " +
+          "AND has_table_privilege(current_user, 'public.investigations', 'INSERT') " +
+          "AND has_table_privilege(current_user, 'public.investigations', 'UPDATE')) AS investigations_write, " +
           "has_table_privilege(current_user, 'public.investigation_evidence', 'INSERT') AS evidence_write"
         );
         if (!permissions.rows[0]?.investigations_write || !permissions.rows[0]?.evidence_write) {
