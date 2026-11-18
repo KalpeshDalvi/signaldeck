@@ -1,0 +1,76 @@
+# SignalDeck architecture and release gates
+
+## End goal
+
+An SRE investigation platform that detects symptoms, retrieves supporting application and infrastructure evidence, explains the actual failure mechanism, identifies the initiating change when a record exists, and recommends an immediate recovery, permanent correction, and evidence-backed validation. It must distinguish **observed facts**, **working hypotheses**, **corroborated mechanisms**, and **unknown upstream intent**. A model must never automatically modify infrastructure or declare a root cause verified without independent evidence.
+
+## Service diagram
+
+```mermaid
+flowchart LR
+    subgraph Lab["GKE lab · signaldeck-lab"]
+      A["checkout / inventory"] --> B["OTel collector"]
+      C["traffic-generator"] --> A
+    end
+    B --> I["Cloud Run: signaldeck-ingest"]
+    I --> T[("Cloud SQL: telemetry_events (short retention)")]
+    I --> E[("Cloud SQL: investigations + investigation_evidence (durable)")]
+    L["GKE Cloud Audit Logs"] --> J["Cloud Run Job: signaldeck-investigator"]
+    E --> J
+    J --> E
+    V["Optional Vertex AI (disabled by default)"] -.-> J
+    R["Cloud Run: signaldeck-read-api (workspace scoped)"] --> T
+    R --> E
+    D["Cloud Run: signaldeck-dashboard"] --> R
+    D --> L
+    U["SRE browser / IAP"] --> D
+```
+
+**Project safety:** The `signaldeck-lab-kd` Google Cloud project also hosts user-facing Spacical infrastructure. Never turn off the project, unrelated Cloud Run services, or Cloud SQL unless service dependencies are verified.
+
+## Functional acceptance
+
+| Feature | Source code | Validation still required |
+|---|---|---|
+| Real distributed tracing | Existing application + collector | Fresh lab traces, parent-child spans, sampling coverage |
+| Kubernetes state | Existing collector and dashboard | Watch-mode Deployment snapshots and Event coverage |
+| Error-based Alerts UI | Existing dashboard | Configurable rule policy; delivery channel not selected |
+| Live service correlation | Existing heuristic engine | Error injection, false-positive tests, timeline proof |
+| Historical GKE audit investigation | Existing dashboard | Audit read role, evidence retention |
+| Durable failure evidence archive | Milestone 3 schema + ingest | Apply migration 003; DB roles; opt-in flag; fresh failure |
+| Saved investigation UI | Read API + dashboard | Read API schema/permissions + workspace isolation in Cloud Run |
+| Initiating GKE scale audit enrichment | New separate investigator job | Least-privilege identity, Cloud Logging permissions, Cloud SQL network, periodic job configuration |
+| Evidence-grounded remediation | New deterministic rules | Multi-event integration and blinded SRE review |
+| Optional Vertex AI analysis | New analyst module | Model/region choice, Vertex IAM, PII policy, quota and budget; disabled by default |
+| Notification delivery | Not configured | Select channel, dedup/rate limit, create outbox and reliable delivery |
+| Production SaaS tenancy & billing | Not complete | Independent tenant identities, RLS/authorization, PII/retention, billing and security reviews |
+
+Passing CI only establishes that syntax, build and tests succeed in disposable environments. It does **not** establish all runtime services are deployed or the complete product is production-ready.
+
+## Repository validation
+
+`.github/workflows/product-validation.yml` runs:
+1. Node syntax checks for read API, ingestion service, and investigator;
+2. archive fixture tests and evidence grounding tests;
+3. TypeScript checks and the Next.js build;
+4. disposable PostgreSQL 16 migrations (001 and 003 twice), replay deduplication and cross-tenant evidence FK check;
+5. read API authentication and archived evidence retrieval.
+
+## Deployment prerequisites (explicit human/authorized Work handoff)
+
+- Review database backup and apply migrations with an authorized Cloud SQL role.
+- Verify writer/read-only DB role separation and actual PostgreSQL privileges.
+- Deploy read API, ingestion service and dashboard with existing Cloud Run auth and secret mappings.
+- Set archive flag **only after** schema/privilege checks. Keep `SIGNALDECK_ARCHIVE_ENABLED=false` by default.
+- Create a separate investigator service account with **Cloud Logging read-only** and narrowly scoped Cloud SQL writes, then deploy/run the Cloud Run Job.
+- Enable `SIGNALDECK_AI_ENABLED=true` and a validated model only after reviewing sensitive data policy and a Vertex AI spending limit. The application limits to 2 model analyses per job execution, but a recurring schedule requires an external budget safeguard.
+- Confirm a controlled new failure remains reconstructable after the raw telemetry record expires.
+- Do not deploy with a broad public allow-unauthenticated permission or use the GKE collector's ingestion key for privileged evidence analysis.
+
+## Cloud cost policy
+
+Do not confuse `min-instances=0` with fully stopped infrastructure. Cloud SQL compute and GKE management/node/pod billing can continue. For a safe low-impact pause, `scripts/pause-signaldeck-lab-safe.ps1` stops only the lab traffic generator with `-Apply`; it intentionally does not resize the Autopilot cluster or disable shared database services. Consult Cloud Billing and verify Spacical service dependencies before stopping a database or cluster. No automated shutdown was applied by this branch.
+
+## Code state
+
+This branch is a **draft feature PR**. Until the protected checks and authorized GCP deployment are performed, it is release-candidate code, not a live or fully verified product. It can be reviewed and merged without local PowerShell work after CI passes; deployment requires GCP access.
