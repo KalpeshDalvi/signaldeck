@@ -40,7 +40,14 @@ function incidentDescriptor(record, now) {
       trace_id: safeText(record.trace_id, 100), span_id: safeText(record.span_id, 100),
       parent_span_id: safeText(record.parent_span_id, 100),
       status_code: record.status_code ?? null, duration_ms: record.duration_ms ?? null,
-      observed_at: record.observed_at
+      observed_at: record.observed_at,
+      // Allowlist operational trace fields. Never archive entire span attributes
+      // (which may contain URLs with secrets, headers, cookies, or PII).
+      span_kind: safeText(attrs["otel.span.kind"], 32),
+      http_route: safeText(attrs["http.route"], 120),
+      http_method: safeText(attrs["http.request.method"] ?? attrs["http.method"], 12),
+      peer_service: safeText(attrs["peer.service"] ?? attrs["rpc.service"] ?? attrs["server.address"], 120),
+      exception_type: safeText(attrs["exception.type"], 120)
     };
   } else if (signal === "log" && ["ERROR","FATAL","CRITICAL"].includes(String(record.severity).toUpperCase())) {
     kind = "application_failure";
