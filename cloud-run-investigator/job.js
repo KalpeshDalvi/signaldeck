@@ -1,6 +1,7 @@
 import pg from "pg";
 import { GoogleAuth } from "google-auth-library";
 import { analyzeScaleIncident, summarizeGkeAudit, validKubernetesName } from "./core.js";
+import { generateEvidenceBoundAnalysis } from "./ai-analyst.js";
 
 const required = ["PGHOST","PGDATABASE","PGUSER","PGPASSWORD",
   "SIGNALDECK_WORKSPACE_ID","SIGNALDECK_GCP_PROJECT_ID","SIGNALDECK_GKE_CLUSTER"];
@@ -117,6 +118,49 @@ async function saveFinding(row,changes) {
   }catch(error){try{await client.query("ROLLBACK")}catch{}throw error}
   finally{client.release()}
 }
+const AI_ENABLED=process.env.SIGNALDECK_AI_ENABLED==="true";
+async function analyzeApplicationIncidents() {
+  if(!AI_ENABLED) return 0;
+  const model=process.env.SIGNALDECK_VERTEX_MODEL;
+  if(!model) throw new Error("SIGNALDECK_VERTEX_MODEL required when AI is enabled");
+  const region=process.env.SIGNALDECK_VERTEX_REGION??"us-central1";
+  // Strict per-execution quota. Never bill Vertex AI for all archived records.
+  const pending=await pool.query(`
+    SELECT id,incident_at,impacted_service,environment
+    FROM public.investigations
+    WHERE workspace_id=$1 AND incident_key LIKE 'app:%'
+      AND verified_mechanism IS NULL
+      AND hypothesis='Failure signal observed; underlying cause is not yet verified'
+      AND incident_at >=now()-INTERVAL '24 hours'
+    ORDER BY incident_at DESC LIMIT 2
+  `,[workspace]);
+  let completed=0;
+  for(const incident of pending.rows) {
+    const source=await pool.query(`
+      SELECT source_type,source_event_id,source_event_at,resource_name,summary,payload
+      FROM public.investigation_evidence
+      WHERE workspace_id=$1 AND investigation_id=$2
+      ORDER BY source_event_at ASC LIMIT 20
+    `,[workspace,incident.id]);
+    if(!source.rows.length)continue;
+    const finding=await generateEvidenceBoundAnalysis({
+      incident,evidence:source.rows,project,
+      region,model
+    });
+    const limitation=`AI-assisted hypothesis only; root cause not independently verified. ${finding.uncertainties} Source IDs: ${finding.evidence_ids.join(", ")}`.slice(0,2400);
+    await pool.query(`
+      UPDATE public.investigations
+      SET hypothesis=$3, immediate_recovery=$4,
+          recurrence_prevention=$5,verification_plan=$6,
+          limitations=$7,updated_at=now()
+      WHERE workspace_id=$1 AND id=$2 AND verified_mechanism IS NULL
+        AND hypothesis='Failure signal observed; underlying cause is not yet verified'
+    `,[workspace,incident.id,`AI-assisted hypothesis: ${finding.hypothesis}. Observed mechanism: ${finding.failure_mechanism}`,
+      finding.immediate_fix,finding.permanent_fix,finding.validation_steps.join("; "),limitation]);
+    completed++;
+  }
+  return completed;
+}
 async function main() {
   let processed=0, enriched=0, withoutMatch=0;
   const items=await loadPending();
@@ -127,8 +171,9 @@ async function main() {
       if(await saveFinding(row,changes)) enriched++;
     } else withoutMatch++;
   }
+  const aiFindings=await analyzeApplicationIncidents();
   console.log(JSON.stringify({event:"signaldeck_investigator_completed",
-    checked:processed,archived:enriched,without_matching_audit:withoutMatch}));
+    checked:processed,archived:enriched,without_matching_audit:withoutMatch,ai_findings:aiFindings}));
 }
 try {await main()}catch(error){
   console.error("signaldeck_investigator_failed",error?.message??"unknown");
