@@ -1,0 +1,58 @@
+name: SignalDeck product validation
+
+on:
+  push:
+    branches:
+      - feature/product-completion-2026-11
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "cloud-run-ingest/**"
+      - "cloud-run-read-api/**"
+      - "package.json"
+      - "tsconfig.json"
+      - ".github/workflows/product-validation.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "cloud-run-ingest/**"
+      - "cloud-run-read-api/**"
+      - "package.json"
+      - "tsconfig.json"
+      - ".github/workflows/product-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signaldeck-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check service JavaScript syntax
+        run: |
+          node --check cloud-run-ingest/server.js
+          node --check cloud-run-ingest/investigation-archive.js
+          node --check cloud-run-read-api/server.js
+      - name: Run archive tests
+        run: node --test cloud-run-ingest/test/*.test.mjs
+      - name: Install dashboard dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck dashboard
+        run: npx tsc --noEmit
+      - name: Build dashboard
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
