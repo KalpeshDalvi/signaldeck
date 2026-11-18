@@ -15,9 +15,14 @@
 
 From Windows PowerShell:
 
+**Release source gate:** PR #5 is still unmerged. Do not use `git pull origin main` and assume it contains the product-completion changes. Either (1) review and merge PR #5, then fetch the validated merge commit on `main`, or (2) deploy the previously CI-validated release-candidate commit `5c7469014078ef2cc6077bd44d19d5a7b172fbec` in detached HEAD after confirming a clean working tree. If the source commit changes, rerun the full validation suite before deploying.
+
 ```powershell
 cd F:\signaldeck
-git pull origin main
+git status --short # must be clean; do not overwrite local changes
+git fetch origin
+git switch --detach 5c7469014078ef2cc6077bd44d19d5a7b172fbec
+git rev-parse HEAD # must match the reviewed commit
 node --check .\cloud-run-ingest\server.js
 node --check .\cloud-run-ingest\investigation-archive.js
 node --check .\cloud-run-read-api\server.js
@@ -26,6 +31,8 @@ npm.cmd run build
 ```
 
 Stop if any test fails. Do not enable archiving before applying the migration.
+
+**Important:** Do not deploy a new Cloud Run revision or apply the migration until (a) the target commit has been selected and validated; (b) database roles and a usable backup/recovery point are verified; and (c) explicit approval is obtained for those live infrastructure changes. The successful read-only GCP inventory runs [44371173092](https://github.com/KalpeshDalvi/signaldeck/actions/runs/44371173092) and [44371057674](https://github.com/KalpeshDalvi/signaldeck/actions/runs/44371057674) establish that SignalDeck ingest/read API use `signaldeck-db`, but do not rule out all Spacical dependencies. Keep the database running. The pre-existing direct Workload Identity Federation works; PR #6 service-account replacement is not a prerequisite.
 
 ## Step 1: Review/apply the schema
 
