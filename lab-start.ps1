@@ -1,69 +1,65 @@
+# Restore SignalDeck-only deployments previously paused with lab-stop.ps1.
+# Never resize/delete the cluster or change other services in the shared project.
 param(
   [string]$Project = "signaldeck-lab-kd",
   [string]$Cluster = "signaldeck-lab",
   [string]$Region = "us-central1",
-  [string]$CloudSqlInstance = "",
-  [string]$StateFile = ".signaldeck-lab-state.json"
+  [string]$StateFile = ".signaldeck-lab-state.json",
+  [switch]$Apply
 )
-
 $ErrorActionPreference = "Stop"
-
-function Run-Gcloud {
-  param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-  & gcloud.cmd @Args
-  if ($LASTEXITCODE -ne 0) { throw "gcloud.cmd failed: $($Args -join ' ')" }
+if ($Project -ne "signaldeck-lab-kd" -or $Cluster -ne "signaldeck-lab" -or $Region -ne "us-central1") {
+  throw "Refusing to operate on an unfamiliar project, cluster or region."
 }
-
 if (-not (Test-Path $StateFile)) {
-  throw "State file '$StateFile' was not found. Run .\lab-stop.ps1 first so the current lab sizes can be restored safely."
+  throw "No saved restore state found at $StateFile. Do not invent original replica counts."
 }
-
 $state = Get-Content -Path $StateFile -Raw | ConvertFrom-Json
 if ($state.project -ne $Project -or $state.cluster -ne $Cluster -or $state.region -ne $Region) {
-  throw "State file does not match Project/Cluster/Region supplied to this script."
+  throw "Restore state does not match the selected GCP project, cluster or region."
 }
-
-Write-Host "SignalDeck lab startup starting..."
-Write-Host "Project: $Project | Cluster: $Cluster | Region: $Region"
-
-if (-not $CloudSqlInstance -and $state.cloudSqlInstance) {
-  $CloudSqlInstance = $state.cloudSqlInstance
+function Invoke-Checked([string]$label,[scriptblock]$action) {
+  Write-Host "--- $label"
+  & $action
+  if ($LASTEXITCODE -ne 0) { throw "$label failed with exit code $LASTEXITCODE" }
 }
-
-if ($CloudSqlInstance) {
-  Write-Host "Starting Cloud SQL instance '$CloudSqlInstance'..."
-  Run-Gcloud sql instances patch $CloudSqlInstance --activation-policy=ALWAYS --project $Project --quiet
-} else {
-  Write-Host "Cloud SQL instance not specified; skipping Cloud SQL start."
+Write-Host "Planned SignalDeck restore:"
+foreach ($d in @($state.deployments)) {
+  Write-Host "  $($d.namespace)/$($d.name) replicas=$($d.replicas)"
 }
-
-foreach ($pool in $state.nodePools) {
-  $numNodes = [int]$pool.numNodes
-  if ($numNodes -lt 1) { $numNodes = 1 }
-  Write-Host "Restoring node pool '$($pool.name)' to $numNodes node(s)..."
-  Run-Gcloud container clusters resize $Cluster --node-pool $pool.name --num-nodes $numNodes --region $Region --project $Project --quiet
+if ($state.cloudSqlInstance) { Write-Host "  Cloud SQL restart: $($state.cloudSqlInstance)" }
+if (-not $Apply) {
+  Write-Host "DRY RUN: no infrastructure changes made. Use -Apply to restore."
+  return
 }
-
-Run-Gcloud container clusters get-credentials $Cluster --region $Region --project $Project
-
-Write-Host "Waiting for GKE nodes to become Ready..."
-kubectl wait --for=condition=Ready nodes --all --timeout=10m
-if ($LASTEXITCODE -ne 0) { throw "GKE nodes did not become Ready within 10 minutes." }
-
-Write-Host "Restoring SignalDeck deployment replica counts..."
-foreach ($deployment in $state.deployments) {
-  $replicas = [int]$deployment.replicas
-  kubectl -n $deployment.namespace scale deployment/$($deployment.name) --replicas=$replicas
-  if ($LASTEXITCODE -ne 0) { throw "Unable to restore deployment $($deployment.namespace)/$($deployment.name)." }
+if ($state.cloudSqlInstance -and $state.cloudSqlInstance -ne "signaldeck-db") {
+  throw "Unexpected Cloud SQL instance in restore state."
 }
-
-Write-Host "Waiting for deployments to roll out..."
-foreach ($deployment in $state.deployments) {
-  if ([int]$deployment.replicas -gt 0) {
-    kubectl -n $deployment.namespace rollout status deployment/$($deployment.name) --timeout=5m
+if ($state.cloudSqlInstance) {
+  Invoke-Checked "Restart signaldeck-db compute" {
+    gcloud.cmd sql instances patch $state.cloudSqlInstance --activation-policy=ALWAYS --project=$Project --quiet
   }
 }
-
-Write-Host ""
-Write-Host "SignalDeck lab is running."
-Write-Host "Use .\lab-stop.ps1 when you are finished to stop worker compute and optional Cloud SQL compute again."
+Invoke-Checked "Refresh GKE credentials" {
+  gcloud.cmd container clusters get-credentials $Cluster --region=$Region --project=$Project
+}
+foreach ($d in @($state.deployments)) {
+  if ($d.namespace -notin @("signaldeck-lab","signaldeck-system") -or
+      $d.name -notmatch "^[a-z0-9][a-z0-9.-]*$" -or
+      [int]$d.replicas -lt 0 -or [int]$d.replicas -gt 20) {
+    throw "Restore state includes an unexpected workload or replica count."
+  }
+  Invoke-Checked "Restore $($d.namespace)/$($d.name)" {
+    kubectl.exe -n $d.namespace scale "deployment/$($d.name)" "--replicas=$($d.replicas)"
+  }
+}
+foreach ($d in @($state.deployments)) {
+  if ([int]$d.replicas -gt 0) {
+    Invoke-Checked "Wait for rollout $($d.namespace)/$($d.name)" {
+      kubectl.exe -n $d.namespace rollout status "deployment/$($d.name)" --timeout=5m
+    }
+  }
+}
+# Preserve a copy for audit/recovery and prevent accidental second restore.
+Move-Item -Path $StateFile -Destination "$StateFile.restored" -Force
+Write-Host "SignalDeck lab restored successfully; old state saved as $StateFile.restored."

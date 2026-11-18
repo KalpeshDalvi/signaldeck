@@ -1,0 +1,111 @@
+name: SignalDeck product validation
+
+on:
+  push:
+    branches:
+      - feature/product-completion-2026-11
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "cloud-run-ingest/**"
+      - "cloud-run-read-api/**"
+      - "cloud-run-investigator/**"
+      - "package.json"
+      - "lab-stop.ps1"
+      - "lab-start.ps1"
+      - "scripts/**"
+      - "tsconfig.json"
+      - ".github/workflows/product-validation.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "cloud-run-ingest/**"
+      - "cloud-run-read-api/**"
+      - "package.json"
+      - "tsconfig.json"
+      - ".github/workflows/product-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signaldeck-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check pause/resume PowerShell syntax (no GCP calls)
+        shell: pwsh
+        run: |
+          $files = @("lab-stop.ps1", "lab-start.ps1", "scripts/pause-signaldeck-lab-safe.ps1")
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) { throw "$file has syntax errors: $($errors -join ', ')" }
+          }
+      - name: Check service JavaScript syntax
+        run: |
+          node --check cloud-run-ingest/server.js
+          node --check cloud-run-ingest/investigation-archive.js
+          node --check cloud-run-read-api/server.js
+          node --check cloud-run-investigator/job.js
+          node --check cloud-run-investigator/core.js
+          node --check cloud-run-investigator/ai-analyst.js
+      - name: Run archive tests
+        run: node --test cloud-run-ingest/test/*.test.mjs
+      - name: Install investigator dependencies
+        run: npm install --prefix cloud-run-investigator --omit=dev --no-audit --no-fund
+      - name: Run deterministic and evidence-grounding tests
+        run: node --test cloud-run-investigator/test/*.test.mjs
+      - name: Install dashboard dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck dashboard
+        run: npx tsc --noEmit
+      - name: Build dashboard
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: signaldeck_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d signaldeck_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install service dependencies
+        run: |
+          npm install --prefix cloud-run-ingest --omit=dev --no-audit --no-fund
+          npm install --prefix cloud-run-read-api --omit=dev --no-audit --no-fund
+      - name: Exercise real PostgreSQL migration and archived API reads
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:ci-password@127.0.0.1:5432/signaldeck_test
+        run: node --test cloud-run-ingest/test/postgres-integration.test.mjs
