@@ -34,6 +34,24 @@ Stop if any test fails. Do not enable archiving before applying the migration.
 
 **Important:** Do not deploy a new Cloud Run revision or apply the migration until (a) the target commit has been selected and validated; (b) database roles and a usable backup/recovery point are verified; and (c) explicit approval is obtained for those live infrastructure changes. The successful read-only GCP inventory runs [44371173092](https://github.com/KalpeshDalvi/signaldeck/actions/runs/44371173092) and [44371057674](https://github.com/KalpeshDalvi/signaldeck/actions/runs/44371057674) establish that SignalDeck ingest/read API use `signaldeck-db`, but do not rule out all Spacical dependencies. Keep the database running. The pre-existing direct Workload Identity Federation works; PR #6 service-account replacement is not a prerequisite.
 
+## Step 0: Pre-migration backup (explicitly approved 2026-11-18)
+
+The operator verified Cloud SQL automated backups are healthy, and the `postgres` login can create tables in `signaldeck`. Point-in-time recovery is disabled. A fresh on-demand backup is still required immediately before migration 003.
+
+In **Google Cloud Shell** (Bash), run:
+
+```bash
+gcloud sql backups create --instance=signaldeck-db \
+  --project=signaldeck-lab-kd \
+  --description="Pre-SignalDeck-M3-migration-003"
+
+gcloud sql backups list --instance=signaldeck-db \
+  --project=signaldeck-lab-kd --limit=5 \
+  --format="table(id,status,type,startTime,endTime,description)"
+```
+
+**STOP** unless the newly created backup is present with status `SUCCESSFUL`. Do not confuse an older successful automated backup with the new on-demand backup. Record its ID, type, and completion timestamp in [rollout issue #7](https://github.com/KalpeshDalvi/signaldeck/issues/7). Never restore over the live instance as a casual rollback; restoration is separately consequential.
+
 ## Step 1: Review/apply the schema
 
 `cloud-sql/migrations/003_durable_investigations.sql` is opt-in, idempotent for a fresh install, and should be reviewed against current schema and backup state.
@@ -52,6 +70,27 @@ SELECT to_regclass('public.investigations') AS investigations,
 ```
 
 The existing ingest DB role must have appropriate `SELECT, INSERT, UPDATE` permissions on `investigations` and `INSERT` on `investigation_evidence`; the read API role needs read-only `SELECT` on both. Review roles with a DBA; never grant universal write access or share the dashboard's authenticated read API key with the collector.
+
+After migration 003 succeeds, run `cloud-sql/migrations/003_archive_runtime_grants.sql` in the **same `signaldeck` database as `postgres`** (Cloud SQL Studio or an authorized `psql` session). This separately reviewed script validates database name, new table existence, and expected application role presence, then grants only archive-table permissions.
+
+In Cloud SQL Studio, paste the **entire file contents** of migration 003 and run it before the grants file. Cloud Shell is Bash and will not execute pasted SQL statements without an active `psql` connection. Do not apply the migration until the new backup above is confirmed.
+
+Read-only verification after both steps:
+
+```sql
+SELECT current_database() AS db,
+ to_regclass('public.investigations') AS investigations,
+ to_regclass('public.investigation_evidence') AS evidence,
+ has_table_privilege('signaldeck_ingest','public.investigations','INSERT') AS ingest_insert,
+ has_table_privilege('signaldeck_ingest','public.investigations','UPDATE') AS ingest_update,
+ has_table_privilege('signaldeck_ingest','public.investigation_evidence','INSERT') AS evidence_insert,
+ has_table_privilege('signaldeck_reader','public.investigations','SELECT') AS reader_investigations,
+ has_table_privilege('signaldeck_reader','public.investigation_evidence','SELECT') AS reader_evidence,
+ (SELECT EXISTS (SELECT 1 FROM public.workspaces WHERE id='default')) AS workspace_default_present;
+```
+
+All six Boolean checks (the last five privilege flags and workspace presence) must be true for the default workspace, before `SIGNALDECK_ARCHIVE_ENABLED` can be enabled. If the default workspace is absent, investigate existing workspace configuration first; do not create an unreviewed tenant.
+
 
 ## Step 2: Deploy code without changing existing auth/secret settings
 
