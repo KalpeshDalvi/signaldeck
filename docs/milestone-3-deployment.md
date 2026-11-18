@@ -15,14 +15,17 @@
 
 From Windows PowerShell:
 
-**Release source gate:** PR #5 is still unmerged. Do not use `git pull origin main` and assume it contains the product-completion changes. Either (1) review and merge PR #5, then fetch the validated merge commit on `main`, or (2) deploy the previously CI-validated release-candidate commit `5c7469014078ef2cc6077bd44d19d5a7b172fbec` in detached HEAD after confirming a clean working tree. If the source commit changes, rerun the full validation suite before deploying.
+**Release source gate:** PR #5 merged to `main` as squash commit `f23415da6ccfd71f5044b891e0953bef0e4f7854` after both CI checks passed. Always deploy from a clean, up-to-date checkout containing this merge. Do not use the older pre-merge commit `5c74690`. Check the current `main` validation workflow too.
+
+For Windows PowerShell:
 
 ```powershell
 cd F:\signaldeck
 git status --short # must be clean; do not overwrite local changes
-git fetch origin
-git switch --detach 5c7469014078ef2cc6077bd44d19d5a7b172fbec
-git rev-parse HEAD # must match the reviewed commit
+git switch main
+git pull --ff-only origin main
+git merge-base --is-ancestor f23415da6ccfd71f5044b891e0953bef0e4f7854 HEAD
+if ($LASTEXITCODE -ne 0) { throw "Missing validated release merge" }
 node --check .\cloud-run-ingest\server.js
 node --check .\cloud-run-ingest\investigation-archive.js
 node --check .\cloud-run-read-api\server.js
@@ -93,6 +96,19 @@ All six Boolean checks (the last five privilege flags and workspace presence) mu
 
 
 ## Step 2: Deploy code without changing existing auth/secret settings
+
+**Recommended for Cloud Shell (Bash, mobile-friendly):** From a clean checkout of the updated `main` branch, run:
+
+```bash
+git pull --ff-only origin main
+bash scripts/release-m3-cloudshell.sh --check
+# After confirming the dry-run preflight and database grants are correct:
+bash scripts/release-m3-cloudshell.sh --apply
+```
+
+This script checks project number, Cloud SQL state, the verified on-demand backup ID, existing service identities and archiving state; it then deploys only the existing Cloud Run read API, ingest service and dashboard from the checked-out source. It refuses a dirty checkout and stops if a service account or environment/secret reference unexpectedly changes. **It does not enable archiving, deploy the optional investigator job, or validate HTTP/OTLP readiness.** Inspect service logs and endpoints after rollout before enabling the flag.
+
+Alternatively, from Windows PowerShell, deploy each service with the commands below after validating the checkout.
 
 Use existing configured Cloud Run services, with the same region/project. Preserve their current environment, service accounts, secrets, and IAM:
 
