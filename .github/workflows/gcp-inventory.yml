@@ -1,0 +1,43 @@
+name: GCP inventory
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inventory:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDSDK_CORE_PROJECT: signaldeck-lab-kd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@v3
+        with:
+          project_id: signaldeck-lab-kd
+          workload_identity_provider: projects/295916870482/locations/global/workloadIdentityPools/signaldeck-github/providers/github
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Inspect database state and Cloud Run revision attachments
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=$(gcloud sql instances describe signaldeck-db --format='value(connectionName)')
+          test -n "$target"
+          gcloud sql instances describe signaldeck-db --format='table(name,region,state,settings.activationPolicy)'
+          gcloud run services list --platform=managed --format='value(metadata.name,metadata.labels."cloud.googleapis.com/location")' > "$RUNNER_TEMP/services"
+          while read -r service region; do
+            test -n "$region"
+            echo "Service $service in $region"
+            gcloud run revisions list --service="$service" --region="$region" --format='value(metadata.name)' > "$RUNNER_TEMP/revisions"
+            while read -r revision; do
+              gcloud run revisions describe "$revision" --region="$region" --format=json |
+                jq -r --arg target "$target" --arg revision "$revision" '
+                  ([((.metadata.annotations["run.googleapis.com/cloudsql-instances"] // "") | split(",")[]),
+                    (.spec.volumes[]?.cloudSqlInstance.instances[]?)] | index($target)) as $match |
+                  $revision + (if $match != null then " declares signaldeck-db" else " has no explicit signaldeck-db attachment" end)'
+            done < "$RUNNER_TEMP/revisions"
+          done < "$RUNNER_TEMP/services"
+          echo "Direct network connections, application secrets, jobs and other clients are outside this check."
