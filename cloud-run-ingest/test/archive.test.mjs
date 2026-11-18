@@ -93,7 +93,7 @@ test("archiveBatch uses a batched investigation upsert and a batched evidence in
     }
     return { rowCount: 1, rows: [] };
   }};
-  const records = [{...base, signal_type: "trace", status_code: 500,
+  const records = [{...base, observed_at: new Date(Date.now()-60_000).toISOString(), signal_type: "trace", status_code: 500,
     trace_id: "t3", span_id: "s3", message: "POST /checkout"}];
   const result = await archiveBatch(client, records, "default");
   assert.equal(result.captured, 1);
