@@ -1,43 +1,76 @@
-name: GCP inventory
+name: GCP inventory (read-only)
+
 on:
   workflow_dispatch:
+
 permissions:
   contents: read
   id-token: write
+
+concurrency:
+  group: signaldeck-gcp-inventory
+  cancel-in-progress: false
+
 jobs:
   inventory:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
       CLOUDSDK_CORE_PROJECT: signaldeck-lab-kd
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: google-github-actions/auth@v3
+      - name: Authenticate with restricted inventory identity
+        uses: google-github-actions/auth@v3
         with:
           project_id: signaldeck-lab-kd
           workload_identity_provider: projects/295916870482/locations/global/workloadIdentityPools/signaldeck-github/providers/github
+          service_account: signaldeck-github-inventory@signaldeck-lab-kd.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v3
-      - name: Inspect database state and Cloud Run revision attachments
+      - name: Inventory Cloud SQL and active Cloud Run revisions
         shell: bash
         run: |
           set -euo pipefail
-          target=$(gcloud sql instances describe signaldeck-db --format='value(connectionName)')
+          echo "## SignalDeck shared-resource safety inventory" >> "$GITHUB_STEP_SUMMARY"
+          echo "Project: `signaldeck-lab-kd`; workflow: manual, read-only." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          gcloud sql instances describe signaldeck-db --format='json(name,connectionName,region,state,settings.activationPolicy)' > "$RUNNER_TEMP/db.json"
+          target=$(jq -r '.connectionName // empty' "$RUNNER_TEMP/db.json")
           test -n "$target"
-          gcloud sql instances describe signaldeck-db --format='table(name,region,state,settings.activationPolicy)'
-          gcloud run services list --platform=managed --format='value(metadata.name,metadata.labels."cloud.googleapis.com/location")' > "$RUNNER_TEMP/services"
-          while read -r service region; do
-            test -n "$region"
-            echo "Service $service in $region"
-            gcloud run revisions list --service="$service" --region="$region" --format='value(metadata.name)' > "$RUNNER_TEMP/revisions"
-            while read -r revision; do
-              gcloud run revisions describe "$revision" --region="$region" --format=json |
-                jq -r --arg target "$target" --arg revision "$revision" '
-                  ([((.metadata.annotations["run.googleapis.com/cloudsql-instances"] // "") | split(",")[]),
-                    (.spec.volumes[]?.cloudSqlInstance.instances[]?)] | index($target)) as $match |
-                  $revision + (if $match != null then " declares signaldeck-db" else " has no explicit signaldeck-db attachment" end)'
-            done < "$RUNNER_TEMP/revisions"
-          done < "$RUNNER_TEMP/services"
-          echo "Direct network connections, application secrets, jobs and other clients are outside this check."
+          jq -r '"Cloud SQL: \(.name), region=\(.region), state=\(.state), activationPolicy=\(.settings.activationPolicy)"' "$RUNNER_TEMP/db.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Cloud Run service | Region | Active revision | Declares signaldeck-db Cloud SQL attachment |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          gcloud run services list --platform=managed --format=json > "$RUNNER_TEMP/services.json"
+          jq -r '.[] | [(.metadata.name // ""), (.metadata.labels["cloud.googleapis.com/location"] // "")] | @tsv' "$RUNNER_TEMP/services.json" > "$RUNNER_TEMP/services.tsv"
+          if [ ! -s "$RUNNER_TEMP/services.tsv" ]; then
+            echo "No Cloud Run services returned; verify permissions and project scope." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          while IFS=$'\t' read -r service region; do
+            if [ -z "$service" ] || [ -z "$region" ]; then
+              echo "A Cloud Run service has no name or region; inventory is incomplete."
+              exit 1
+            fi
+            gcloud run services describe "$service" --region="$region" --format=json > "$RUNNER_TEMP/service.json"
+            jq -r '.status.traffic[]? | select((.percent // 0) > 0) | .revisionName // empty' "$RUNNER_TEMP/service.json" > "$RUNNER_TEMP/active-revisions"
+            if [ ! -s "$RUNNER_TEMP/active-revisions" ]; then
+              echo "No resolvable active revision for $service ($region)." >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            while IFS= read -r revision; do
+              gcloud run revisions describe "$revision" --region="$region" --format=json > "$RUNNER_TEMP/revision.json"
+              attachment=$(jq -r --arg target "$target" '
+                [
+                  ((.metadata.annotations["run.googleapis.com/cloudsql-instances"] // "") | split(",")[]),
+                  (.spec.volumes[]?.cloudSqlInstance.instances[]?),
+                  (.spec.containers[]?.volumeMounts[]?.name // empty)
+                ] | any(. == $target)' "$RUNNER_TEMP/revision.json")
+              if [ "$attachment" = true ]; then status="YES"; else status="Not declared"; fi
+              printf '| %s | %s | %s | %s |\n' "$service" "$region" "$revision" "$status" >> "$GITHUB_STEP_SUMMARY"
+            done < "$RUNNER_TEMP/active-revisions"
+          done < "$RUNNER_TEMP/services.tsv"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Important:** No declared attachment does not prove a service is independent of this database. Direct TCP connections, secret-driven connection strings, Cloud Run jobs, GKE workloads, other projects, and external clients are not included. Do not stop Cloud SQL based on this report alone." >> "$GITHUB_STEP_SUMMARY"
