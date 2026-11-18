@@ -10,6 +10,7 @@ on:
       - "lib/**"
       - "cloud-run-ingest/**"
       - "cloud-run-read-api/**"
+      - "cloud-run-investigator/**"
       - "package.json"
       - "tsconfig.json"
       - ".github/workflows/product-validation.yml"
@@ -46,8 +47,12 @@ jobs:
           node --check cloud-run-ingest/server.js
           node --check cloud-run-ingest/investigation-archive.js
           node --check cloud-run-read-api/server.js
+          node --check cloud-run-investigator/job.js
+          node --check cloud-run-investigator/core.js
       - name: Run archive tests
         run: node --test cloud-run-ingest/test/*.test.mjs
+      - name: Run deterministic RCA tests
+        run: node --test cloud-run-investigator/test/*.test.mjs
       - name: Install dashboard dependencies
         run: npm install --no-audit --no-fund
       - name: Typecheck dashboard
