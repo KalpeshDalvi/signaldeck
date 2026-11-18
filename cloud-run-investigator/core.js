@@ -26,6 +26,7 @@ export function summarizeGkeAudit(entry, deployment, namespace) {
     timestamp: entry.timestamp,
     method: String(p.methodName),
     principal: String(p.authenticationInfo?.principalEmail ?? "Unknown"),
+    failed: Boolean(p.status?.code && Number(p.status.code) !== 0),
     resource: String(p.resourceName),
     replicas: count,
   };
@@ -35,13 +36,18 @@ export function analyzeScaleIncident({ incident, deployment, namespace, evidence
   if (!Number.isFinite(time)) throw new Error("invalid_incident_time");
   const zeroSnapshot = evidence.some(e =>
     e.source_type === "k8s_event" && e.payload?.deployment === deployment &&
-    e.payload?.namespace === namespace && Number(e.payload?.desired_replicas) === 0
+    e.payload?.namespace === namespace && e.payload?.desired_replicas === 0
   );
   const near = changes.filter(c =>
     Math.abs(Date.parse(c.timestamp) - time) <= WINDOW_MS
   ).sort((a,b) => Date.parse(a.timestamp)-Date.parse(b.timestamp));
-  const zero = near.find(c => c.replicas === 0);
-  const recovery = zero && near.find(c => c.replicas !== null &&
+  // A request after the snapshot or superseded by a pre-snapshot restore
+  // cannot explain the observed workload state.
+  const latestBeforeSnapshot = near.findLast(c =>
+    !c.failed && c.replicas !== null && Date.parse(c.timestamp) <= time
+  );
+  const zero = latestBeforeSnapshot?.replicas === 0 ? latestBeforeSnapshot : null;
+  const recovery = zero && near.find(c => !c.failed && c.replicas !== null &&
     c.replicas > 0 && Date.parse(c.timestamp) > Date.parse(zero.timestamp));
   if (!zero) return {
     level: zeroSnapshot ? "workload_state_observed" : "insufficient_evidence",

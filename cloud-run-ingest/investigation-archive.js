@@ -57,7 +57,8 @@ function incidentDescriptor(record, now) {
     payload = { trace_id: safeText(record.trace_id, 100), span_id: safeText(record.span_id, 100),
       severity: record.severity ?? "ERROR", excerpt: safeText(record.message, 600) };
   } else if (signal === "k8s_event" && attrs["k8s.kind"] === "Deployment" &&
-    Number(attrs["k8s.deployment.replicas"]) === 0) {
+    [0, "0"].includes(attrs["k8s.deployment.replicas"]) &&
+    attrs["k8s.watch.type"] !== "DELETED") {
     const deployment = String(attrs["k8s.deployment.name"] ?? service);
     const namespace = String(attrs["k8s.namespace.name"] ?? "unknown");
     if (!SAFE_LABEL.test(deployment) || !SAFE_LABEL.test(namespace)) return null;
@@ -67,7 +68,7 @@ function incidentDescriptor(record, now) {
     sourceType = "k8s_event";
     payload = {
       namespace, deployment, desired_replicas: 0,
-      ready_replicas: Number(attrs["k8s.deployment.ready_replicas"] ?? 0),
+      ready_replicas: attrs["k8s.deployment.ready_replicas"] ?? null,
       resource_version: safeText(attrs["k8s.resource_version"], 100),
       uid: safeText(attrs["k8s.uid"], 100)
     };
@@ -111,8 +112,8 @@ export function planArchive(records, now = Date.now()) {
   return { investigations: [...investigations.values()], evidence, omitted };
 }
 
-export async function archiveBatch(client, records, workspaceId) {
-  const plan = planArchive(records);
+export async function archiveBatch(client, records, workspaceId, now = Date.now()) {
+  const plan = planArchive(records, now);
   if (!plan.investigations.length) return { captured: 0, investigations: 0, omitted: 0 };
   // One batch UPSERT, not one query per incident. Keep the hot OTLP path
   // bounded even if all 500 records are distinct failures.
@@ -149,8 +150,9 @@ export async function archiveBatch(client, records, workspaceId) {
       item.observedAt, item.resourceName, item.summary, JSON.stringify(item.payload));
     placeholders.push("(" + Array.from({length:8}, () => "$" + idx++).join(",") + ")");
   }
+  let captured = 0;
   if (placeholders.length) {
-    await client.query(
+    const inserted = await client.query(
       `INSERT INTO public.investigation_evidence
        (workspace_id, investigation_id, source_type, source_event_id,
         source_event_at, resource_name, summary, payload)
@@ -158,6 +160,7 @@ export async function archiveBatch(client, records, workspaceId) {
        ON CONFLICT (investigation_id, source_type, source_event_id) DO NOTHING`,
       fields
     );
+    captured = inserted.rowCount;
   }
-  return { captured: placeholders.length, investigations: plan.investigations.length, omitted: plan.omitted };
+  return { captured, investigations: plan.investigations.length, omitted: plan.omitted };
 }

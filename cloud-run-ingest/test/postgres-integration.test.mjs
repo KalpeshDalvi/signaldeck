@@ -30,6 +30,13 @@ test("end-to-end durable archive against disposable PostgreSQL and read API",
     await client.query("BEGIN");
     await archiveBatch(client,[sample],"default");
     await client.query("COMMIT");
+    // Simulate raw telemetry retention for just this test fixture.
+    const raw = await client.query(`
+      INSERT INTO telemetry_events (workspace_id, signal_type, service_name, trace_id, observed_at)
+      VALUES ('default', 'trace', 'checkout', $1, $2) RETURNING id
+    `, [sample.trace_id, observedAt]);
+    const removed = await client.query("DELETE FROM telemetry_events WHERE id=$1", [raw.rows[0].id]);
+    assert.equal(removed.rowCount, 1);
     const count=await client.query(
       "SELECT COUNT(*)::integer AS n FROM investigation_evidence WHERE workspace_id='default'");
     assert.equal(count.rows[0].n,1,"replay must not duplicate source evidence");

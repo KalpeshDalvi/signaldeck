@@ -52,7 +52,7 @@ async function loadPending() {
       SELECT payload,source_event_at
       FROM public.investigation_evidence e
       WHERE e.investigation_id=i.id AND e.workspace_id=i.workspace_id
-        AND e.source_type='k8s_event'
+        AND e.source_type='k8s_event' AND e.source_event_at IS NOT NULL
       ORDER BY e.source_event_at ASC LIMIT 1
     ) e ON TRUE
     WHERE i.workspace_id=$1 AND i.incident_key LIKE 'k8s:%'
@@ -82,7 +82,7 @@ async function saveFinding(row,changes) {
       ORDER BY source_event_at ASC LIMIT 100
     `,[row.id,workspace]);
     const result=analyzeScaleIncident({
-      incident:{incident_at:row.incident_at},
+      incident:{incident_at:row.source_event_at},
       deployment:row.payload.deployment,
       namespace:row.payload.namespace,
       evidence:found.rows,changes
@@ -99,7 +99,7 @@ async function saveFinding(row,changes) {
       `,[workspace,row.id,change.id,change.timestamp,change.resource,
         `${change.method}: desired replicas ${change.replicas??"unrecorded"}`,
         JSON.stringify({method:change.method,principal:change.principal,
-          requested_replicas:change.replicas,resource:change.resource})]);
+          requested_replicas:change.replicas,request_failed:change.failed,resource:change.resource})]);
     }
     await client.query(`
       UPDATE public.investigations
@@ -165,7 +165,7 @@ async function main() {
   let processed=0, enriched=0, withoutMatch=0;
   const items=await loadPending();
   for(const row of items){
-    const changes=await auditChanges(row.payload.deployment,row.payload.namespace,row.incident_at);
+    const changes=await auditChanges(row.payload.deployment,row.payload.namespace,row.source_event_at);
     processed++;
     if(changes.length) {
       if(await saveFinding(row,changes)) enriched++;

@@ -48,3 +48,24 @@ test("document recovery separately",()=>{
    evidence:[snapshot],changes:[audit,rec]});
  assert.match(r.limitations,/Restoration was requested/);
 });
+
+test("a denied request or a scale request after the snapshot cannot identify the initiator", () => {
+  const denied = summarizeGkeAudit({
+    timestamp: audit.timestamp, protoPayload: {
+      methodName: audit.method, resourceName: audit.resource,
+      request: {spec:{replicas:0}}, status: {code:7}
+    }
+  }, "inventory", "signaldeck-lab");
+  const later = {...audit, timestamp:"2026-11-17T13:01:00Z"};
+  const finding = analyzeScaleIncident({incident, deployment:"inventory",
+    namespace:"signaldeck-lab", evidence:[snapshot], changes:[denied, later]});
+  assert.equal(finding.initiating_change, null);
+  assert.equal(finding.initiating_actor, null);
+});
+
+test("a restore before the snapshot supersedes the earlier scale-down", () => {
+  const restore = {...audit, timestamp:"2026-11-17T12:59:55Z", replicas:1};
+  const finding = analyzeScaleIncident({incident, deployment:"inventory",
+    namespace:"signaldeck-lab", evidence:[snapshot], changes:[audit, restore]});
+  assert.equal(finding.initiating_change, null);
+});

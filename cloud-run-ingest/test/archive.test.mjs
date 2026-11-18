@@ -93,9 +93,9 @@ test("archiveBatch uses a batched investigation upsert and a batched evidence in
     }
     return { rowCount: 1, rows: [] };
   }};
-  const records = [{...base, observed_at: new Date(Date.now()-60_000).toISOString(), signal_type: "trace", status_code: 500,
+  const records = [{...base, signal_type: "trace", status_code: 500,
     trace_id: "t3", span_id: "s3", message: "POST /checkout"}];
-  const result = await archiveBatch(client, records, "default");
+  const result = await archiveBatch(client, records, "default", NOW);
   assert.equal(result.captured, 1);
   assert.equal(result.investigations, 1);
   assert.equal(statements.length, 2);
@@ -112,4 +112,20 @@ test("OTLP-sized failure batch preserves all 500 distinct source events", () => 
   const planned = planArchive(records, NOW);
   assert.equal(planned.evidence.length, 500);
   assert.equal(planned.omitted, 0);
+});
+
+test("absent replica counts and deleted snapshots do not imply a scale-down", () => {
+  const deployment = {
+    ...base, signal_type: "k8s_event",
+    attributes: { "k8s.kind": "Deployment", "k8s.deployment.name": "inventory" }
+  };
+  const deleted = {
+    ...deployment,
+    attributes: {
+      ...deployment.attributes,
+      "k8s.deployment.replicas": 0,
+      "k8s.watch.type": "DELETED"
+    }
+  };
+  assert.equal(planArchive([deployment, deleted], NOW).evidence.length, 0);
 });
