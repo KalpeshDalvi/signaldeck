@@ -69,7 +69,7 @@ Passing CI only establishes that syntax, build and tests succeed in disposable e
 
 ## Cloud cost policy
 
-Do not confuse `min-instances=0` with fully stopped infrastructure. Cloud SQL compute and GKE management/node/pod billing can continue. For a safe low-impact pause, `scripts/pause-signaldeck-lab-safe.ps1` stops only the lab traffic generator with `-Apply`; it intentionally does not resize the Autopilot cluster or disable shared database services. Consult Cloud Billing and verify Spacical service dependencies before stopping a database or cluster. No automated shutdown was applied by this branch.
+Do not confuse `min-instances=0` with fully stopped infrastructure. Cloud SQL compute and GKE management/node/pod billing can continue. For a safe low-impact pause, `scripts/pause-signaldeck-lab-safe.ps1` stops only the lab traffic generator with `-Apply`. For a fuller pause, `lab-stop.ps1 -Apply` records all SignalDeck-only deployment replica counts then scales those deployments to zero, without resizing or deleting GKE nodes; `lab-start.ps1 -Apply` restores from the saved local state. Stopping `signaldeck-db` requires the additional explicit `-StopCloudSql` flag after confirming that no Spacical service depends on it. Consult Cloud Billing and verify Spacical service dependencies before stopping a database or cluster. No automated shutdown was applied by this branch.
 
 ## Code state
 
