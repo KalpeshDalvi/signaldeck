@@ -1,113 +1,70 @@
+# Safe stop of SignalDeck-only GKE workloads; never resize/delete cluster nodes.
+# Read-only unless -Apply is explicitly supplied. Supports GKE Autopilot.
 param(
   [string]$Project = "signaldeck-lab-kd",
   [string]$Cluster = "signaldeck-lab",
   [string]$Region = "us-central1",
-  [string]$CloudSqlInstance = "",
-  [string]$StateFile = ".signaldeck-lab-state.json"
+  [string]$CloudSqlInstance = "signaldeck-db",
+  [string]$StateFile = ".signaldeck-lab-state.json",
+  [switch]$Apply,
+  [switch]$StopCloudSql
 )
-
 $ErrorActionPreference = "Stop"
-
-function Invoke-Gcloud {
-  param(
-    [Parameter(Mandatory = $true)][string[]]$CommandArgs,
-    [switch]$Capture
-  )
-
-  # Windows PowerShell can surface normal gcloud stderr messages as
-  # NativeCommandError when ErrorActionPreference is Stop. Temporarily
-  # allow native stderr and use LASTEXITCODE as the source of truth.
-  $oldPreference = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
-  try {
-    if ($Capture) {
-      $output = & gcloud.cmd @CommandArgs 2>&1
-      $exitCode = $LASTEXITCODE
-      if ($exitCode -ne 0) {
-        throw "gcloud.cmd failed ($exitCode): $($CommandArgs -join ' ')`n$($output -join [Environment]::NewLine)"
-      }
-      return $output
-    }
-
-    & gcloud.cmd @CommandArgs 2>&1 | ForEach-Object { Write-Host $_ }
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-      throw "gcloud.cmd failed ($exitCode): $($CommandArgs -join ' ')"
-    }
-  }
-  finally {
-    $ErrorActionPreference = $oldPreference
-  }
+if ($Project -ne "signaldeck-lab-kd" -or $Cluster -ne "signaldeck-lab" -or $Region -ne "us-central1") {
+  throw "Refusing to operate on an unfamiliar project, cluster or region."
 }
-
-function Get-DeploymentState {
-  param([string]$Namespace)
-  $json = kubectl -n $Namespace get deployment -o json 2>$null
-  if ($LASTEXITCODE -ne 0 -or -not $json) { return @() }
+if ($StopCloudSql -and $CloudSqlInstance -ne "signaldeck-db") {
+  throw "Refusing to stop a Cloud SQL instance other than the designated SignalDeck database."
+}
+function Invoke-Checked([string]$label,[scriptblock]$action) {
+  Write-Host "--- $label"
+  & $action
+  if ($LASTEXITCODE -ne 0) { throw "$label failed with exit code $LASTEXITCODE" }
+}
+Invoke-Checked "Get SignalDeck cluster credentials" {
+  gcloud.cmd container clusters get-credentials $Cluster --region=$Region --project=$Project
+}
+$namespaces = @("signaldeck-lab","signaldeck-system")
+$deployments = @()
+foreach ($ns in $namespaces) {
+  $json = & kubectl.exe -n $ns get deployments -o json
+  if ($LASTEXITCODE -ne 0) { throw "Could not read workloads in $ns; no scale changes made." }
   $obj = $json | ConvertFrom-Json
-  return @($obj.items | ForEach-Object {
-    [ordered]@{
-      namespace = $Namespace
-      name = $_.metadata.name
-      replicas = if ($null -eq $_.spec.replicas) { 1 } else { [int]$_.spec.replicas }
-    }
-  })
-}
-
-Write-Host "SignalDeck lab shutdown starting..."
-Write-Host "Project: $Project | Cluster: $Cluster | Region: $Region"
-
-Invoke-Gcloud -CommandArgs @("container", "clusters", "get-credentials", $Cluster, "--region", $Region, "--project", $Project)
-
-$nodePoolsJson = Invoke-Gcloud -Capture -CommandArgs @("container", "node-pools", "list", "--cluster", $Cluster, "--region", $Region, "--project", $Project, "--format=json")
-$nodePools = ($nodePoolsJson -join [Environment]::NewLine) | ConvertFrom-Json
-
-$state = [ordered]@{
-  project = $Project
-  cluster = $Cluster
-  region = $Region
-  stoppedAt = (Get-Date).ToString("o")
-  nodePools = @()
-  deployments = @()
-  cloudSqlInstance = $CloudSqlInstance
-}
-
-foreach ($pool in $nodePools) {
-  $poolName = $pool.name
-  $sizeText = Invoke-Gcloud -Capture -CommandArgs @("container", "node-pools", "describe", $poolName, "--cluster", $Cluster, "--region", $Region, "--project", $Project, "--format=value(initialNodeCount)")
-  $size = 1
-  $firstSize = (($sizeText | Select-Object -First 1).ToString()).Trim()
-  if ([int]::TryParse($firstSize, [ref]$size) -eq $false) { $size = 1 }
-  if ($size -lt 1) { $size = 1 }
-  $state.nodePools += [ordered]@{ name = $poolName; numNodes = $size }
-}
-
-$state.deployments += Get-DeploymentState -Namespace "signaldeck-system"
-$state.deployments += Get-DeploymentState -Namespace "signaldeck-lab"
-
-$state | ConvertTo-Json -Depth 6 | Set-Content -Path $StateFile -Encoding UTF8
-Write-Host "Saved restore state to $StateFile"
-
-Write-Host "Stopping SignalDeck workloads and telemetry..."
-foreach ($deployment in $state.deployments) {
-  kubectl -n $deployment.namespace scale deployment/$($deployment.name) --replicas=0 2>$null
-  if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Could not scale deployment $($deployment.namespace)/$($deployment.name) to zero."
+  foreach ($item in @($obj.items)) {
+    $replicas = 1
+    if ($null -ne $item.spec.replicas) { $replicas = [int]$item.spec.replicas }
+    $deployments += [ordered]@{namespace=$ns;name=$item.metadata.name;replicas=$replicas}
   }
 }
-
-foreach ($pool in $nodePools) {
-  Write-Host "Scaling node pool '$($pool.name)' to 0..."
-  Invoke-Gcloud -CommandArgs @("container", "clusters", "resize", $Cluster, "--node-pool", $pool.name, "--num-nodes", "0", "--region", $Region, "--project", $Project, "--quiet")
+Write-Host "Discovered $($deployments.Count) SignalDeck deployments:"
+$deployments | ForEach-Object { Write-Host "  $($_.namespace)/$($_.name) replicas=$($_.replicas)" }
+if (-not $Apply) {
+  Write-Host "DRY RUN: no resources changed."
+  Write-Host "Use -Apply to pause SignalDeck workloads. -StopCloudSql additionally stops only signaldeck-db."
+  Write-Host "Do not use -StopCloudSql until you verify Spacical and other services do not depend on it."
+  return
 }
-
-if ($CloudSqlInstance) {
-  Write-Host "Stopping Cloud SQL instance '$CloudSqlInstance'..."
-  Invoke-Gcloud -CommandArgs @("sql", "instances", "patch", $CloudSqlInstance, "--activation-policy=NEVER", "--project", $Project, "--quiet")
-} else {
-  Write-Host "Cloud SQL instance not specified; skipping Cloud SQL stop."
+if (Test-Path $StateFile) {
+  throw "Restore state file already exists: $StateFile. Refusing to overwrite the original replica counts."
 }
-
-Write-Host ""
-Write-Host "SignalDeck lab is shut down."
-Write-Host "Remaining charges can still include GKE control-plane fees, persistent disks, Artifact Registry, Cloud SQL storage/backups, and other retained resources."
+$state = [ordered]@{
+  project=$Project;cluster=$Cluster;region=$Region;
+  savedAt=(Get-Date).ToUniversalTime().ToString("o");
+  deployments=$deployments;
+  cloudSqlInstance=if($StopCloudSql){$CloudSqlInstance}else{""}
+}
+$state | ConvertTo-Json -Depth 8 | Set-Content -Path $StateFile -Encoding UTF8
+Write-Host "Saved restore state to $StateFile."
+foreach ($d in $deployments) {
+  Invoke-Checked "Scale $($d.namespace)/$($d.name) to zero" {
+    kubectl.exe -n $d.namespace scale "deployment/$($d.name)" --replicas=0
+  }
+}
+if ($StopCloudSql) {
+  Write-Host "Stopping Cloud SQL compute for $CloudSqlInstance (storage/backups remain billed)."
+  Invoke-Checked "Pause signaldeck-db" {
+    gcloud.cmd sql instances patch $CloudSqlInstance --activation-policy=NEVER --project=$Project --quiet
+  }
+}
+Write-Host "SignalDeck deployments paused. GKE cluster not deleted/resized; Spacical services untouched."
+Write-Host "Remaining costs can include regional GKE management, attached storage, retained disks, and SQL storage/backups."
