@@ -49,9 +49,12 @@ jobs:
           node --check cloud-run-read-api/server.js
           node --check cloud-run-investigator/job.js
           node --check cloud-run-investigator/core.js
+          node --check cloud-run-investigator/ai-analyst.js
       - name: Run archive tests
         run: node --test cloud-run-ingest/test/*.test.mjs
-      - name: Run deterministic RCA tests
+      - name: Install investigator dependencies
+        run: npm install --prefix cloud-run-investigator --omit=dev --no-audit --no-fund
+      - name: Run deterministic and evidence-grounding tests
         run: node --test cloud-run-investigator/test/*.test.mjs
       - name: Install dashboard dependencies
         run: npm install --no-audit --no-fund
