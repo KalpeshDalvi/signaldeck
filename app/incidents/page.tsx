@@ -3,11 +3,12 @@ import { Suspense } from "react";
 import { PageHeader } from "@/components/AppShell";
 import { formatDuration } from "@/lib/analytics";
 import { correlateDeployments } from "@/lib/change-correlation";
-import { ensureIncident } from "@/lib/incidents";
+import { ensureIncidents } from "@/lib/incidents";
 import { listArchivedInvestigations } from "@/lib/investigation-archive";
 import { clusterIncidentCandidates } from "@/lib/multi-incident";
 import { readTelemetry } from "@/lib/telemetry";
 import { formatCentralDateTime, formatCentralTime } from "@/lib/time";
+import { workspaceId } from "@/lib/workspace";
 import IncidentControls from "./IncidentControls";
 import "./incidents.css";
 export const dynamic="force-dynamic";
@@ -45,7 +46,14 @@ export default async function IncidentsPage(){
  const savedInvestigations = listArchivedInvestigations(6);
  const records=await readTelemetry(500),candidates=clusterIncidentCandidates(records),active=candidates[0],primary=active?.service,correlation=active?.finding;
  const traces=records.filter(r=>r.signal_type==="trace"),errorTraces=traces.filter(isError).sort((a,b)=>new Date(b.observed_at).getTime()-new Date(a.observed_at).getTime()),errorLogs=records.filter(r=>r.signal_type==="log"&&isError(r)).sort((a,b)=>new Date(b.observed_at).getTime()-new Date(a.observed_at).getTime()),k8sEvents=records.filter(r=>r.signal_type==="k8s_event").sort((a,b)=>new Date(b.observed_at).getTime()-new Date(a.observed_at).getTime());
- const incidents=await Promise.all(candidates.map(c=>ensureIncident({workspace_id:process.env.SIGNALDECK_WORKSPACE_ID??"billpay",title:`${c.service.name} ${c.service.environment} failure`,service_name:c.service.name,environment:c.service.environment,severity:c.service.status==="Critical"?"SEV-1":"SEV-2",summary:c.finding.summary})));
+ const incidents = await ensureIncidents(candidates.map(candidate => ({
+   workspace_id: workspaceId(),
+   title: `${candidate.service.name} ${candidate.service.environment} failure`,
+   service_name: candidate.service.name,
+   environment: candidate.service.environment,
+   severity: candidate.service.status === "Critical" ? "SEV-1" : "SEV-2",
+   summary: candidate.finding.summary,
+ })));
  const errorRate = traces.length ? (errorTraces.length / traces.length) * 100 : 0;
  const slowestFailure = errorTraces.reduce<(typeof errorTraces)[number] | undefined>((slowest, trace) => {
    if (!slowest || (trace.duration_ms ?? 0) > (slowest.duration_ms ?? 0)) return trace;
@@ -57,7 +65,7 @@ export default async function IncidentsPage(){
  return <><PageHeader eyebrow="INCIDENT COMMAND" title={candidates.length>1?`${candidates.length} concurrent incidents`:incident?incident.title:"No active incident"} description="Independent failure groups, hypotheses, and operational response records.">{incident?<><span className="pill warning">{candidates.length} active</span><span className="pill critical">{incident.severity}</span></>:<span className="pill healthy">Healthy</span>}</PageHeader>
  {candidates.length>0&&<article className="panel" style={{marginBottom:"18px"}}><div className="panel-title"><div><h2>Active incident groups</h2><p>Each group is isolated by impacted service and its correlated request path</p></div></div><div className="cluster-facts" style={{gridTemplateColumns:"repeat(auto-fit,minmax(260px,1fr))"}}>{candidates.map((c,i)=><div key={c.key}><span>{i===0?"PRIMARY RESPONSE":"CONCURRENT INCIDENT"}</span><strong style={{display:"block",marginTop:"7px"}}>{c.service.name} · {c.service.status}</strong><small style={{display:"block",marginTop:"7px"}}>{c.service.environment} · {c.service.errorRate.toFixed(1)}% errors · P95 {(c.service.p95/1000).toFixed(2)} s</small><small style={{display:"block",marginTop:"7px"}}>{c.finding.requestPath.join(" → ")} · {Math.min(c.finding.score,95)}% confidence</small><small style={{display:"block",marginTop:"7px"}}>{c.finding.failureMode}</small></div>)}</div></article>}
  <section className="incident-hero"><div><span className="incident-kicker">{incident?`Incident ${incident.id.slice(0,8)} · ${incident.status}`:"Telemetry is within thresholds"}</span><h2>{incident&&primary?`${primary.name} requires coordinated response`:"No immediate response required"}</h2><p>{incident?incident.summary:"Continue ingesting traces, logs and Kubernetes state to detect future incidents."}</p>{incident&&<div className="incident-meta"><span>Started {formatCentralDateTime(incident.started_at)}</span><span>Owner: {incident.owner??"Unassigned"}</span><span>{incident.environment}</span></div>}</div><div className="incident-score"><small>Evidence</small><strong>{evidenceCount}</strong><span>{candidates.length} independent group{candidates.length===1?"":"s"}</span></div></section>
- {incident&&<IncidentControls incident={incident}/>}<div className="incident-metrics"><article><span>Active incidents</span><strong>{candidates.length}</strong><small>{candidates.map(c=>c.service.name).join(", ")||"None"}</small></article><article><span>Failed traces</span><strong>{errorTraces.length}</strong><small>{errorRate.toFixed(1)}% global sample error rate</small></article><article><span>Slowest failure</span><strong>{slowestFailure?formatDuration(slowestFailure.duration_ms??0):"—"}</strong><small>{slowestFailure?.service_name??"No failed trace"}</small></article><article><span>Primary correlation</span><strong>{correlation?`${Math.min(correlation.score,95)}%`:"—"}</strong><small>{correlation?`${correlation.affectedService} → ${correlation.dependency??"unknown"}`:"No finding"}</small></article></div>
+ {incident&&<IncidentControls key={incident.id} incident={incident}/>}<div className="incident-metrics"><article><span>Active incidents</span><strong>{candidates.length}</strong><small>{candidates.map(c=>c.service.name).join(", ")||"None"}</small></article><article><span>Failed traces</span><strong>{errorTraces.length}</strong><small>{errorRate.toFixed(1)}% global sample error rate</small></article><article><span>Slowest failure</span><strong>{slowestFailure?formatDuration(slowestFailure.duration_ms??0):"—"}</strong><small>{slowestFailure?.service_name??"No failed trace"}</small></article><article><span>Primary correlation</span><strong>{correlation?`${Math.min(correlation.score,95)}%`:"—"}</strong><small>{correlation?`${correlation.affectedService} → ${correlation.dependency??"unknown"}`:"No finding"}</small></article></div>
  <section className="panel incident-archive" aria-labelledby="incident-archive-title">
    <div className="panel-title">
      <h2 id="incident-archive-title">Recent saved investigations</h2>

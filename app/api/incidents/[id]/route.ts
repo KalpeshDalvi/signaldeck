@@ -1,8 +1,13 @@
-import { addIncidentNote, getIncident, updateIncident, type IncidentRecord, type IncidentSeverity, type IncidentStatus } from "@/lib/incidents";
+import { addIncidentNote, getIncident, IncidentNotFoundError, updateIncident, type IncidentPatch, type IncidentSeverity, type IncidentStatus } from "@/lib/incidents";
 
 const statuses: IncidentStatus[] = ["detected", "investigating", "mitigated", "resolved"];
 const severities: IncidentSeverity[] = ["SEV-1", "SEV-2", "SEV-3"];
-type IncidentPatch = Partial<Pick<IncidentRecord, "status" | "owner" | "severity" | "summary" | "notes">>;
+
+function mutationError(error: unknown, message: string) {
+  if (error instanceof IncidentNotFoundError) return Response.json({ error: error.message }, { status: 404 });
+  console.error(message, error instanceof Error ? error.name : "");
+  return Response.json({ error: message }, { status: 500 });
+}
 
 export async function GET(_: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
@@ -24,13 +29,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       if (!severities.includes(body.severity)) return Response.json({ error: "Invalid severity" }, { status: 400 });
       patch.severity = body.severity;
     }
-    if (body.owner !== undefined) patch.owner = String(body.owner).trim() || null;
+    if (body.owner !== undefined) patch.owner = String(body.owner ?? "").trim() || null;
     if (body.summary !== undefined) patch.summary = String(body.summary).trim();
 
     const incident = await updateIncident(id, patch);
     return Response.json({ incident });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Unable to update incident" }, { status: 500 });
+    return mutationError(error, "Unable to update incident");
   }
 }
 
@@ -43,6 +48,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const incident = await addIncidentNote(id, String(body.author ?? "Incident commander").trim(), message);
     return Response.json({ incident });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Unable to add note" }, { status: 500 });
+    return mutationError(error, "Unable to add note");
   }
 }

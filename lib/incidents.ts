@@ -1,4 +1,13 @@
 import { workspaceId } from "./workspace";
+import {
+  appendStoredIncidentNote,
+  ensureStoredIncidents,
+  getStoredIncident,
+  incidentKey,
+  incidentPool,
+  listStoredIncidents,
+  updateStoredIncident,
+} from "./incident-postgres";
 
 export type IncidentStatus = "detected" | "investigating" | "mitigated" | "resolved";
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
@@ -21,6 +30,15 @@ export type IncidentRecord = {
   notes: IncidentNote[];
 };
 
+export type IncidentCandidate = Pick<IncidentRecord, "workspace_id" | "title" | "service_name" | "environment" | "severity" | "summary">;
+export type IncidentPatch = Partial<Pick<IncidentRecord, "title" | "status" | "owner" | "severity" | "summary">>;
+
+export class IncidentNotFoundError extends Error {
+  constructor() {
+    super("Incident not found");
+  }
+}
+
 declare global {
   // eslint-disable-next-line no-var
   var signaldeckIncidents: IncidentRecord[] | undefined;
@@ -40,6 +58,12 @@ function headers(key: string) {
 }
 
 export async function listIncidents(requestedWorkspace?: string) {
+  const postgres = incidentPool();
+  if (postgres) return listStoredIncidents(postgres, requestedWorkspace);
+  return listLegacyIncidents(requestedWorkspace);
+}
+
+async function listLegacyIncidents(requestedWorkspace?: string) {
   const selectedWorkspace = workspaceId(requestedWorkspace);
   const db = config();
   if (!db) {
@@ -56,25 +80,43 @@ export async function listIncidents(requestedWorkspace?: string) {
 }
 
 export async function getIncident(id: string, requestedWorkspace?: string) {
-  const incidents = await listIncidents(requestedWorkspace);
+  const postgres = incidentPool();
+  if (postgres) return getStoredIncident(postgres, id, requestedWorkspace);
+  const incidents = await listLegacyIncidents(requestedWorkspace);
   return incidents.find((incident) => incident.id === id) ?? null;
 }
 
-export async function ensureIncident(input: Pick<IncidentRecord, "workspace_id" | "title" | "service_name" | "environment" | "severity" | "summary">) {
-  const normalizedInput = { ...input, workspace_id: workspaceId(input.workspace_id) };
-  const incidents = await listIncidents(normalizedInput.workspace_id);
-  const existing = incidents.find((incident) =>
-    incident.service_name === normalizedInput.service_name &&
-    incident.environment === normalizedInput.environment &&
-    incident.status !== "resolved",
-  );
+export async function ensureIncidents(inputs: IncidentCandidate[]) {
+  if (!inputs.length) return [];
+  const postgres = incidentPool();
+  if (postgres) return ensureStoredIncidents(postgres, inputs);
+
+  const normalized = inputs.map(input => ({ ...input, workspace_id: workspaceId(input.workspace_id) }));
+  const workspaces = [...new Set(normalized.map(input => input.workspace_id))];
+  const active = new Map<string, IncidentRecord>();
+  const keyFor = (input: IncidentCandidate) => JSON.stringify([input.workspace_id, incidentKey(input)]);
+  await Promise.all(workspaces.map(async workspace => {
+    for (const incident of await listLegacyIncidents(workspace)) {
+      const key = keyFor(incident);
+      if (incident.status !== "resolved" && !active.has(key)) active.set(key, incident);
+    }
+  }));
+  const unique = new Map(normalized.map(input => [keyFor(input), input]));
+  const records = new Map(await Promise.all(Array.from(unique, async ([key, input]) =>
+    [key, await ensureLegacyIncident(input, active.get(key))] as const,
+  )));
+  return normalized.map(input => records.get(keyFor(input))!);
+}
+
+export async function ensureIncident(input: IncidentCandidate) {
+  const [incident] = await ensureIncidents([input]);
+  return incident;
+}
+
+async function ensureLegacyIncident(input: IncidentCandidate, existing?: IncidentRecord) {
   if (existing) {
-    if (existing.title !== normalizedInput.title || existing.summary !== normalizedInput.summary || existing.severity !== normalizedInput.severity) {
-      return updateIncident(existing.id, {
-        title: normalizedInput.title,
-        summary: normalizedInput.summary,
-        severity: normalizedInput.severity,
-      }, normalizedInput.workspace_id);
+    if (existing.title !== input.title || existing.summary !== input.summary || existing.severity !== input.severity) {
+      return updateLegacyIncident(existing, { title: input.title, summary: input.summary, severity: input.severity });
     }
     return existing;
   }
@@ -82,7 +124,7 @@ export async function ensureIncident(input: Pick<IncidentRecord, "workspace_id" 
   const now = new Date().toISOString();
   const incident: IncidentRecord = {
     id: crypto.randomUUID(),
-    ...normalizedInput,
+    ...input,
     status: "detected",
     owner: null,
     started_at: now,
@@ -108,9 +150,19 @@ export async function ensureIncident(input: Pick<IncidentRecord, "workspace_id" 
   return ((await response.json()) as IncidentRecord[])[0];
 }
 
-export async function updateIncident(id: string, patch: Partial<Pick<IncidentRecord, "title" | "status" | "owner" | "severity" | "summary" | "notes">>, requestedWorkspace?: string) {
+export async function updateIncident(id: string, patch: IncidentPatch, requestedWorkspace?: string) {
+  const postgres = incidentPool();
+  if (postgres) {
+    const incident = await updateStoredIncident(postgres, id, patch, requestedWorkspace);
+    if (!incident) throw new IncidentNotFoundError();
+    return incident;
+  }
   const current = await getIncident(id, requestedWorkspace);
-  if (!current) throw new Error("Incident not found");
+  if (!current) throw new IncidentNotFoundError();
+  return updateLegacyIncident(current, patch);
+}
+
+async function updateLegacyIncident(current: IncidentRecord, patch: IncidentPatch & { notes?: IncidentNote[] }) {
   const now = new Date().toISOString();
   const next: IncidentRecord = {
     ...current,
@@ -122,13 +174,13 @@ export async function updateIncident(id: string, patch: Partial<Pick<IncidentRec
 
   const db = config();
   if (!db) {
-    const index = memoryStore.findIndex((incident) => incident.id === id && incident.workspace_id === current.workspace_id);
+    const index = memoryStore.findIndex((incident) => incident.id === current.id && incident.workspace_id === current.workspace_id);
     memoryStore[index] = next;
     return next;
   }
 
   const response = await fetch(
-    `${db.url}/rest/v1/incidents?id=eq.${encodeURIComponent(id)}&workspace_id=eq.${encodeURIComponent(current.workspace_id)}`,
+    `${db.url}/rest/v1/incidents?id=eq.${encodeURIComponent(current.id)}&workspace_id=eq.${encodeURIComponent(current.workspace_id)}`,
     {
       method: "PATCH",
       headers: { ...headers(db.key), Prefer: "return=representation" },
@@ -141,8 +193,14 @@ export async function updateIncident(id: string, patch: Partial<Pick<IncidentRec
 }
 
 export async function addIncidentNote(id: string, author: string, message: string, requestedWorkspace?: string) {
-  const incident = await getIncident(id, requestedWorkspace);
-  if (!incident) throw new Error("Incident not found");
   const note: IncidentNote = { id: crypto.randomUUID(), author, message, created_at: new Date().toISOString() };
-  return updateIncident(id, { notes: [...incident.notes, note] }, incident.workspace_id);
+  const postgres = incidentPool();
+  if (postgres) {
+    const incident = await appendStoredIncidentNote(postgres, id, note, requestedWorkspace);
+    if (!incident) throw new IncidentNotFoundError();
+    return incident;
+  }
+  const incident = await getIncident(id, requestedWorkspace);
+  if (!incident) throw new IncidentNotFoundError();
+  return updateLegacyIncident(incident, { notes: [...incident.notes, note] });
 }
