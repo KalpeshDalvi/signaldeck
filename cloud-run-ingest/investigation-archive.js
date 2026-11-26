@@ -152,12 +152,14 @@ export async function archiveBatch(client, records, workspaceId, now = Date.now(
   }
   let captured = 0;
   if (placeholders.length) {
+    // The unique source key deduplicates replays. Naming its columns here
+    // would require SELECT privileges on the insert-only evidence table.
     const inserted = await client.query(
       `INSERT INTO public.investigation_evidence
        (workspace_id, investigation_id, source_type, source_event_id,
         source_event_at, resource_name, summary, payload)
        VALUES ${placeholders.join(",")}
-       ON CONFLICT (investigation_id, source_type, source_event_id) DO NOTHING`,
+       ON CONFLICT DO NOTHING`,
       fields
     );
     captured = inserted.rowCount;

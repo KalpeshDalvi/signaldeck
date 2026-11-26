@@ -1,84 +1,159 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { once } from "node:events";
+import { readFileSync } from "node:fs";
+import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { archiveBatch } from "../investigation-archive.js";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
-test("end-to-end durable archive against disposable PostgreSQL and read API",
-  {skip: !dbUrl, timeout: 60000}, async () => {
-  const {default: pg} = await import("pg");
-  const client = new pg.Client({connectionString:dbUrl});
-  await client.connect();
-  const migrationRoot=new URL("../../cloud-sql/migrations/", import.meta.url);
-  try {
-    await client.query(readFileSync(new URL("001_bootstrap.sql",migrationRoot),"utf8"));
-    await client.query(readFileSync(new URL("003_durable_investigations.sql",migrationRoot),"utf8"));
-    // A rerun should succeed if a deployment was interrupted after migration.
-    await client.query(readFileSync(new URL("003_durable_investigations.sql",migrationRoot),"utf8"));
-    await client.query("INSERT INTO workspaces (id,name) VALUES ('default','Lab'),('other','Other') ON CONFLICT DO NOTHING");
-    const observedAt=new Date().toISOString();
-    const sample={workspace_id:"default", signal_type:"trace",service_name:"checkout",
-      environment:"lab", severity:"ERROR",status_code:500,message:"POST /checkout",
-      trace_id:"fixture-trace-1",span_id:"fixture-span-1",
-      attributes:{"http.route":"/checkout","peer.service":"inventory"},
-      observed_at:observedAt};
-    await client.query("BEGIN");
-    await archiveBatch(client,[sample],"default");
-    await client.query("COMMIT");
-    await client.query("BEGIN");
-    await archiveBatch(client,[sample],"default");
-    await client.query("COMMIT");
-    // Simulate raw telemetry retention for just this test fixture.
-    const raw = await client.query(`
-      INSERT INTO telemetry_events (workspace_id, signal_type, service_name, trace_id, observed_at)
-      VALUES ('default', 'trace', 'checkout', $1, $2) RETURNING id
-    `, [sample.trace_id, observedAt]);
-    const removed = await client.query("DELETE FROM telemetry_events WHERE id=$1", [raw.rows[0].id]);
-    assert.equal(removed.rowCount, 1);
-    const count=await client.query(
-      "SELECT COUNT(*)::integer AS n FROM investigation_evidence WHERE workspace_id='default'");
-    assert.equal(count.rows[0].n,1,"replay must not duplicate source evidence");
-    const inv=await client.query(
-      "SELECT id FROM investigations WHERE workspace_id='default' LIMIT 1");
-    assert.equal(inv.rowCount,1);
-    // Composite FK rejects cross-tenant evidence attribution.
-    await assert.rejects(
-      client.query(`INSERT INTO investigation_evidence
-        (workspace_id,investigation_id,source_type,source_event_id,summary)
-        VALUES ('other',$1,'trace','cross-tenant','invalid')`,[inv.rows[0].id]),
-      /foreign key|violates/i
+const password = "ci-runtime-password";
+const key = "ci-only-key";
+const headers = { Authorization: `Bearer ${key}` };
+const root = new URL("../../", import.meta.url);
+
+async function startService(t, path, port, env) {
+  const child = spawn(process.execPath, [path], {
+    cwd: root,
+    env: { ...process.env, ...env, PORT: String(port) },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  const exited = once(child, "exit");
+  let errors = "";
+  child.stderr.on("data", (data) => { errors += data.toString(); });
+  t.after(async () => {
+    child.kill("SIGTERM");
+    await exited;
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    assert.equal(child.exitCode, null, `${path} exited: ${errors}`);
+    const response = await fetch(`${origin}/healthz`).catch(() => null);
+    if (response?.ok) return { origin, errors: () => errors };
+    await delay(100);
+  }
+  assert.fail(`${path} did not start: ${errors}`);
+}
+
+function traceFixture(status, service, observedAt) {
+  const traceId = randomBytes(16).toString("hex");
+  const spanId = randomBytes(8).toString("hex");
+  const time = BigInt(observedAt.valueOf()) * 1_000_000n + 500_000n;
+  return { traceId, spanId, body: JSON.stringify({
+    resourceSpans: [{
+      resource: { attributes: [
+        { key: "service.name", value: { stringValue: service } },
+        { key: "deployment.environment", value: { stringValue: "lab" } },
+      ] },
+      scopeSpans: [{ spans: [{
+        traceId, spanId, name: "POST /checkout",
+        startTimeUnixNano: time.toString(), endTimeUnixNano: (time + 1_000_000n).toString(),
+        attributes: [
+          { key: "http.response.status_code", value: { intValue: String(status) } },
+          { key: "peer.service", value: { stringValue: "inventory" } },
+        ],
+      }] }],
+    }],
+  }) };
+}
+
+test("OTLP persists durable evidence with the documented ingest and reader grants",
+  { skip: !dbUrl, timeout: 60000 }, async (t) => {
+    const { default: pg } = await import("pg");
+    const admin = new pg.Client({ connectionString: dbUrl });
+    await admin.connect();
+    t.after(() => admin.end());
+
+    const migrate = (name) => admin.query(readFileSync(new URL(`cloud-sql/migrations/${name}`, root), "utf8"));
+    await migrate("001_bootstrap.sql");
+    await migrate("003_durable_investigations.sql");
+    await migrate("003_durable_investigations.sql");
+    // Mirror the deployed table grants with fixture roles in the disposable database.
+    await admin.query(`
+      CREATE ROLE signaldeck_test_ingest LOGIN PASSWORD '${password}';
+      CREATE ROLE signaldeck_test_reader LOGIN PASSWORD '${password}';
+      GRANT USAGE ON SCHEMA public TO signaldeck_test_ingest, signaldeck_test_reader;
+      GRANT INSERT ON public.telemetry_events, public.investigation_evidence TO signaldeck_test_ingest;
+      GRANT SELECT, INSERT, UPDATE ON public.investigations TO signaldeck_test_ingest;
+      GRANT SELECT ON public.investigations, public.investigation_evidence TO signaldeck_test_reader;
+      INSERT INTO public.workspaces (id, name) VALUES ('default', 'Lab'), ('other', 'Other') ON CONFLICT DO NOTHING;
+    `);
+
+    const db = new URL(dbUrl);
+    const env = {
+      DATABASE_URL: "", PGHOST: db.hostname, PGPORT: db.port || "5432",
+      PGDATABASE: db.pathname.slice(1), PGPASSWORD: password,
+      SIGNALDECK_WORKSPACE_ID: "default",
+    };
+    const ingest = await startService(t, "cloud-run-ingest/server.js", 18079, {
+      ...env, PGUSER: "signaldeck_test_ingest", SIGNALDECK_INGESTION_KEY: key,
+      SIGNALDECK_ARCHIVE_ENABLED: "true",
+    });
+    const ready = await fetch(`${ingest.origin}/ready`);
+    assert.equal(ready.status, 200);
+    assert.deepEqual(await ready.json(), { status: "ready", archive_enabled: true });
+
+    const postTrace = async ({ body }) => {
+      const response = await fetch(`${ingest.origin}/v1/traces`, {
+        method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body,
+      });
+      assert.equal(response.status, 202, ingest.errors());
+      assert.deepEqual(await response.json(), { backend: "postgresql", accepted: 1 });
+    };
+    const observedAt = new Date();
+    const failure = traceFixture(500, "checkout", observedAt);
+    await postTrace(failure);
+    await postTrace(failure);
+    const healthy = traceFixture(200, "healthy-checkout", observedAt);
+    await postTrace(healthy);
+
+    const raw = await admin.query(
+      "SELECT trace_id, status_code FROM public.telemetry_events WHERE trace_id IN ($1, $2)",
+      [failure.traceId, healthy.traceId],
     );
-    const url = new URL(dbUrl);
-    const env={...process.env,PORT:"18080",PGHOST:url.hostname,
-      PGPORT:url.port||"5432",PGDATABASE:url.pathname.slice(1),
-      PGUSER:decodeURIComponent(url.username),PGPASSWORD:decodeURIComponent(url.password),
-      SIGNALDECK_READ_KEY:"ci-only-key",SIGNALDECK_WORKSPACE_ID:"default"};
-    const child=spawn(process.execPath,["cloud-run-read-api/server.js"],{
-      cwd:new URL("../../",import.meta.url).pathname,env,stdio:"pipe"});
-    let errors="";
-    child.stderr.on("data",b=>{errors+=String(b)});
-    try {
-      let ready=false;
-      for(let tries=0;tries<60;tries++){
-        if(child.exitCode!==null)throw new Error(`read API exited: ${errors}`);
-        try{const r=await fetch("http://127.0.0.1:18080/healthz");if(r.ok){ready=true;break}}catch{}
-        await delay(100);
-      }
-      assert.ok(ready,`read API did not become ready: ${errors}`);
-      const unauthorized=await fetch("http://127.0.0.1:18080/v1/investigations");
-      assert.equal(unauthorized.status,401);
-      const headers={Authorization:"Bearer ci-only-key"};
-      const list=await fetch("http://127.0.0.1:18080/v1/investigations",{headers});
-      assert.equal(list.status,200);
-      const rows=await list.json();
-      assert.equal(rows.investigations.length,1);
-      const detail=await fetch(`http://127.0.0.1:18080/v1/investigations/${inv.rows[0].id}`,{headers});
-      assert.equal(detail.status,200);
-      const payload=await detail.json();
-      assert.equal(payload.evidence.length,1);
-      assert.equal(payload.evidence[0].payload.peer_service,"inventory");
-    } finally {child.kill("SIGTERM")}
-  } finally {await client.end()}
-});
+    assert.ok(raw.rows.some((row) => row.trace_id === failure.traceId && row.status_code === 500));
+    assert.equal(raw.rows.filter((row) => row.trace_id === healthy.traceId && row.status_code === 200).length, 1);
+    // Simulate expiration of the failed trace in this disposable database.
+    const removed = await admin.query("DELETE FROM public.telemetry_events WHERE trace_id = $1", [failure.traceId]);
+    assert.ok(removed.rowCount > 0);
+
+    const readerEnv = { ...env, PGUSER: "signaldeck_test_reader", SIGNALDECK_READ_KEY: key };
+    const reader = await startService(t, "cloud-run-read-api/server.js", 18080, readerEnv);
+    const listPath = "/v1/investigations";
+    const unauthorized = await fetch(`${reader.origin}${listPath}`);
+    assert.equal(unauthorized.status, 401);
+
+    const list = await fetch(`${reader.origin}${listPath}`, { headers });
+    assert.equal(list.status, 200);
+    const { investigations } = await list.json();
+    assert.equal(investigations.length, 1, "replay and healthy spans must not create investigations");
+    const [investigation] = investigations;
+    assert.equal(investigation.impacted_service, "checkout");
+    assert.equal(investigation.verified_mechanism, null);
+    assert.ok(investigation.limitations);
+
+    const detailPath = `${listPath}/${investigation.id}`;
+    const detail = await fetch(`${reader.origin}${detailPath}`, { headers });
+    assert.equal(detail.status, 200);
+    const { evidence } = await detail.json();
+    assert.equal(evidence.length, 1, "replay must not duplicate source evidence");
+    assert.equal(evidence[0].source_type, "trace");
+    assert.match(evidence[0].source_event_id, /^[a-f0-9]{64}$/);
+    assert.equal(evidence[0].source_event_at, observedAt.toISOString());
+    assert.ok(Date.parse(evidence[0].captured_at) >= observedAt.valueOf());
+    assert.equal(evidence[0].payload.trace_id, failure.traceId);
+    assert.equal(evidence[0].payload.span_id, failure.spanId);
+    assert.equal(evidence[0].payload.peer_service, "inventory");
+
+    await assert.rejects(admin.query(`INSERT INTO public.investigation_evidence
+      (workspace_id, investigation_id, source_type, source_event_id, summary)
+      VALUES ('other', $1, 'trace', 'cross-tenant', 'invalid')`, [investigation.id]), { code: "23503" });
+    const otherReader = await startService(t, "cloud-run-read-api/server.js", 18081, {
+      ...readerEnv, SIGNALDECK_WORKSPACE_ID: "other",
+    });
+    const otherList = await fetch(`${otherReader.origin}${listPath}`, { headers });
+    assert.equal(otherList.status, 200);
+    assert.deepEqual(await otherList.json(), { investigations: [] });
+    const otherDetail = await fetch(`${otherReader.origin}${detailPath}`, { headers });
+    assert.equal(otherDetail.status, 404);
+  });
