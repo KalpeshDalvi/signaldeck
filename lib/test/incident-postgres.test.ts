@@ -27,7 +27,7 @@ test("dashboard persists incident lifecycle with restricted PostgreSQL grants",
       SIGNALDECK_INCIDENT_DB_PASSWORD: "incident-test-password",
     });
     const { incidentPool } = await import("../incident-postgres");
-    const { addIncidentNote, ensureIncidents, getIncident, IncidentNotFoundError, listIncidents, updateIncident } = await import("../incidents");
+    const { addIncidentNote, ensureIncidents, getIncident, IncidentNotFoundError, listIncidentHistory, listIncidents, updateIncident } = await import("../incidents");
     const writer = incidentPool()!;
     t.after(() => writer.end());
 
@@ -82,9 +82,27 @@ test("dashboard persists incident lifecycle with restricted PostgreSQL grants",
     assert.notEqual(newIncident.id, resolved.id);
     assert.deepEqual(await getIncident(resolved.id), resolved);
 
+    const history = await listIncidentHistory();
+    const historicalRecord = history.find(entry => entry.id === resolved.id);
+    assert.equal(historicalRecord?.status, "resolved");
+    assert.equal(historicalRecord?.owner, null);
+    assert.ok(historicalRecord && !("notes" in historicalRecord));
+    assert.ok(!history.some(entry => entry.id === other.id));
+
     const payments = { ...checkout, service_name: "payments" };
     const invalid = { ...checkout, service_name: "invalid", severity: "invalid" as IncidentCandidate["severity"] };
     await assert.rejects(ensureIncidents([payments, invalid]), { code: "23514" });
     assert.equal((await listIncidents()).some(item => item.service_name === "payments"), false);
     assert.equal((await ensureIncidents([payments]))[0].service_name, "payments");
+
+    await admin.query(`
+      INSERT INTO public.incidents
+        (workspace_id, service_name, title, environment, severity, status, updated_at)
+      SELECT 'lifecycle', 'history-fixture-' || ordinal, 'Fixture', 'lab', 'SEV-3', 'resolved',
+        now() - ordinal * interval '1 day'
+      FROM generate_series(1, 35) AS ordinal
+    `);
+    const recent = await listIncidentHistory();
+    assert.equal(recent.length, 30);
+    assert.ok(recent.every((entry, index) => index === 0 || entry.updated_at <= recent[index - 1].updated_at));
   });

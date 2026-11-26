@@ -1,5 +1,5 @@
 import { Pool, type PoolClient } from "pg";
-import type { IncidentCandidate, IncidentNote, IncidentPatch, IncidentRecord } from "./incidents";
+import type { IncidentCandidate, IncidentHistoryEntry, IncidentNote, IncidentPatch, IncidentRecord } from "./incidents";
 import { workspaceId } from "./workspace";
 
 type IncidentRow = Omit<IncidentRecord, "started_at" | "updated_at" | "mitigated_at" | "resolved_at"> & {
@@ -61,6 +61,16 @@ export async function listStoredIncidents(db: Pool, requestedWorkspace?: string)
     SELECT * FROM public.incidents WHERE workspace_id = $1 ORDER BY updated_at DESC
   `, [scopedWorkspace(requestedWorkspace)]);
   return rows.map(toIncident);
+}
+
+export async function listStoredIncidentHistory(db: Pool, limit: number): Promise<IncidentHistoryEntry[]> {
+  type HistoryRow = Omit<IncidentHistoryEntry, "updated_at"> & { updated_at: Date };
+  const { rows } = await db.query<HistoryRow>(`
+    SELECT id, title, environment, severity, status, owner, updated_at
+    FROM public.incidents
+    WHERE workspace_id = $1 ORDER BY updated_at DESC, id DESC LIMIT $2
+  `, [scopedWorkspace(), limit]);
+  return rows.map(row => ({ ...row, updated_at: row.updated_at.toISOString() }));
 }
 
 function incidentParams(id: string, requestedWorkspace?: string) {

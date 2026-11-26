@@ -6,6 +6,7 @@ import {
   incidentKey,
   incidentPool,
   listStoredIncidents,
+  listStoredIncidentHistory,
   updateStoredIncident,
 } from "./incident-postgres";
 
@@ -31,6 +32,9 @@ export type IncidentRecord = {
 };
 
 export type IncidentCandidate = Pick<IncidentRecord, "workspace_id" | "title" | "service_name" | "environment" | "severity" | "summary">;
+export type IncidentHistoryEntry = Pick<IncidentRecord,
+  "id" | "title" | "environment" | "severity" | "status" | "owner" | "updated_at">;
+
 export type IncidentPatch = Partial<Pick<IncidentRecord, "title" | "status" | "owner" | "severity" | "summary">>;
 
 export class IncidentNotFoundError extends Error {
@@ -63,16 +67,25 @@ export async function listIncidents(requestedWorkspace?: string) {
   return listLegacyIncidents(requestedWorkspace);
 }
 
-async function listLegacyIncidents(requestedWorkspace?: string) {
+export const INCIDENT_HISTORY_LIMIT = 30;
+
+export async function listIncidentHistory(): Promise<IncidentHistoryEntry[]> {
+  const postgres = incidentPool();
+  if (postgres) return listStoredIncidentHistory(postgres, INCIDENT_HISTORY_LIMIT);
+  return listLegacyIncidents(undefined, INCIDENT_HISTORY_LIMIT);
+}
+
+async function listLegacyIncidents(requestedWorkspace?: string, limit?: number) {
   const selectedWorkspace = workspaceId(requestedWorkspace);
   const db = config();
   if (!db) {
     return memoryStore
       .filter((incident) => incident.workspace_id === selectedWorkspace)
-      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, limit);
   }
   const response = await fetch(
-    `${db.url}/rest/v1/incidents?select=*&workspace_id=eq.${encodeURIComponent(selectedWorkspace)}&order=updated_at.desc`,
+    `${db.url}/rest/v1/incidents?select=*&workspace_id=eq.${encodeURIComponent(selectedWorkspace)}&order=updated_at.desc${limit === undefined ? "" : `&limit=${limit}`}`,
     { headers: headers(db.key), cache: "no-store" },
   );
   if (!response.ok) throw new Error(`Incident query failed: ${response.status} ${await response.text()}`);

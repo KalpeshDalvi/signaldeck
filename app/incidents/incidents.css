@@ -93,3 +93,8 @@
     gap: 8px;
   }
 }
+
+.incident-note-entry p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
