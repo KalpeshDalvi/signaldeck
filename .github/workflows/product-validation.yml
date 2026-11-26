@@ -79,6 +79,8 @@ jobs:
         run: node --test cloud-run-investigator/test/*.test.mjs
       - name: Install dashboard dependencies
         run: npm install --no-audit --no-fund
+      - name: Verify Central Time rendering
+        run: npx tsx --test lib/test/time.test.ts
       - name: Typecheck dashboard
         run: npx tsc --noEmit
       - name: Build dashboard

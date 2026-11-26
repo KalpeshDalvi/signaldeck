@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/AppShell";
 import { listArchivedInvestigations } from "@/lib/investigation-archive";
+import { formatCentralDateTime } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 export default async function InvestigationsPage() {
@@ -28,7 +29,7 @@ export default async function InvestigationsPage() {
           <span className="pill info">{item.status}</span>
           <div>
             <strong>{item.impacted_service ?? "Unknown workload"} · {item.environment}</strong>
-            <p>{new Date(item.incident_at).toLocaleString()} · {item.hypothesis ?? "Evidence captured; diagnosis pending"}</p>
+            <p><time dateTime={item.incident_at}>{formatCentralDateTime(item.incident_at)}</time> · {item.hypothesis ?? "Evidence captured; diagnosis pending"}</p>
             <small>{item.verified_mechanism
               ? "Verified mechanism recorded"
               : "Root cause not independently verified"}</small>

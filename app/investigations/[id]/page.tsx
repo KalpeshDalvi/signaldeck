@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageHeader } from "@/components/AppShell";
 import { getArchivedInvestigation } from "@/lib/investigation-archive";
+import { formatCentralDateTime } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export default async function SavedInvestigationPage({ params }: {
   return <>
     <PageHeader eyebrow="SAVED INVESTIGATION"
       title={`${record.impacted_service ?? "Unknown workload"} · ${record.environment}`}
-      description={`Evidence recorded around ${new Date(record.incident_at).toLocaleString()}`}>
+      description={`Evidence recorded around ${formatCentralDateTime(record.incident_at)}`}>
       <span className="pill info">{record.status}</span>
     </PageHeader>
     <p style={{ marginBottom: 16 }}><Link href="/investigations">All saved investigations</Link></p>
@@ -43,13 +44,13 @@ export default async function SavedInvestigationPage({ params }: {
     </article>
     <article className="panel">
       <div className="panel-title"><div><h2>Preserved evidence timeline</h2>
-        <p>{evidence.length} saved source record{evidence.length === 1 ? "" : "s"} · retained independently of raw telemetry</p></div></div>
+        <p>{evidence.length} saved source record{evidence.length === 1 ? "" : "s"} · retained independently of raw telemetry · US Central Time</p></div></div>
       {evidence.length === 0 ? <p>No evidence records have been stored for this investigation.</p> :
         <div className="list">{evidence.map(item =>
           <div className="list-item" key={item.id}><div style={{ width: "100%" }}>
             <strong>{item.source_type} · {item.summary}</strong>
-            <p>Observed: {item.source_event_at ? new Date(item.source_event_at).toLocaleString() : "Unknown"}
-              {" · "}Captured: {new Date(item.captured_at).toLocaleString()}</p>
+            <p>Observed: {item.source_event_at ? <time dateTime={item.source_event_at}>{formatCentralDateTime(item.source_event_at)}</time> : "Unknown"}
+              {" · "}Captured: <time dateTime={item.captured_at}>{formatCentralDateTime(item.captured_at)}</time></p>
             <small>Resource: {item.resource_name ?? "Unknown"} · Source ID: {item.source_event_id}</small>
             <pre style={{ fontSize: 12, overflowWrap: "anywhere", whiteSpace: "pre-wrap", marginTop: 8 }}>
               {JSON.stringify(item.payload, null, 2)}
