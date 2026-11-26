@@ -11,13 +11,16 @@
   "dependencies": {
     "next": "latest",
     "google-auth-library": "^9.15.1",
+    "pg": "^8.13.1",
     "react": "latest",
     "react-dom": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/pg": "^8.11.10",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "tsx": "^4.20.0",
     "typescript": "latest"
   }
 }

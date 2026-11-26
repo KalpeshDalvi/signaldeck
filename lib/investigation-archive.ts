@@ -1,4 +1,4 @@
-import { GoogleAuth } from "google-auth-library";
+import { getReadApiIdentityToken } from "./read-api-auth";
 
 export type ArchivedInvestigation = {
   id: string;
@@ -40,9 +40,7 @@ async function archiveFetch<T>(path: string): Promise<ArchiveRead<T>> {
   try {
     const url = new URL(path, base);
     const audience = new URL(base).origin;
-    const idClient = await new GoogleAuth().getIdTokenClient(audience);
-    const headers = await idClient.getRequestHeaders(audience);
-    const idToken = headers.Authorization ?? headers.authorization;
+    const idToken = await getReadApiIdentityToken(audience);
     if (!idToken) return { status: "unavailable", data: null };
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${key}`, "X-Serverless-Authorization": idToken },
@@ -62,8 +60,8 @@ async function archiveFetch<T>(path: string): Promise<ArchiveRead<T>> {
   }
 }
 
-export async function listArchivedInvestigations(): Promise<ArchiveRead<{ investigations: ArchivedInvestigation[] }>> {
-  return archiveFetch("/v1/investigations?limit=30");
+export async function listArchivedInvestigations(limit = 30): Promise<ArchiveRead<{ investigations: ArchivedInvestigation[] }>> {
+  return archiveFetch(`/v1/investigations?limit=${limit}`);
 }
 export async function getArchivedInvestigation(id: string): Promise<ArchiveRead<{
   investigation: ArchivedInvestigation;

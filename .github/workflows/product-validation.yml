@@ -116,3 +116,9 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://postgres:ci-password@127.0.0.1:5432/signaldeck_test
         run: node --test cloud-run-ingest/test/postgres-integration.test.mjs
+      - name: Install dashboard dependencies
+        run: npm install --no-audit --no-fund
+      - name: Exercise incident lifecycle writes with the restricted PostgreSQL role
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:ci-password@127.0.0.1:5432/signaldeck_test
+        run: npx tsx --test lib/test/incident-postgres.test.ts
