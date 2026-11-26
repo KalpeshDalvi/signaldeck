@@ -1,6 +1,6 @@
 import pg from "pg";
 import { GoogleAuth } from "google-auth-library";
-import { analyzeScaleIncident, summarizeGkeAudit, validKubernetesName } from "./core.js";
+import { analyzeScaleIncident, auditLogResource, summarizeGkeAudit, validKubernetesName } from "./core.js";
 import { generateEvidenceBoundAnalysis } from "./ai-analyst.js";
 
 const required = ["PGHOST","PGDATABASE","PGUSER","PGPASSWORD",
@@ -9,6 +9,8 @@ for (const name of required) if (!process.env[name]) throw new Error(`Missing ${
 const project = process.env.SIGNALDECK_GCP_PROJECT_ID;
 const cluster = process.env.SIGNALDECK_GKE_CLUSTER;
 const workspace = process.env.SIGNALDECK_WORKSPACE_ID;
+const logView = process.env.SIGNALDECK_GCP_LOG_VIEW;
+const loggingResource = auditLogResource(project, logView);
 const MAX_ITEMS = 25;
 const auth = new GoogleAuth({scopes:["https://www.googleapis.com/auth/logging.read"]});
 const pool = new pg.Pool({
@@ -34,7 +36,7 @@ async function auditChanges(deployment,namespace,at) {
   const response=await fetch("https://logging.googleapis.com/v2/entries:list",{
     method:"POST",
     headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},
-    body:JSON.stringify({resourceNames:[`projects/${project}`],filter,
+    body:JSON.stringify({resourceNames:[loggingResource],filter,
       pageSize:50,orderBy:"timestamp asc"}),
     signal:AbortSignal.timeout(8000)
   });
@@ -175,7 +177,22 @@ async function main() {
   console.log(JSON.stringify({event:"signaldeck_investigator_completed",
     checked:processed,archived:enriched,without_matching_audit:withoutMatch,ai_findings:aiFindings}));
 }
-try {await main()}catch(error){
+async function checkRuntime([namespace, deployment, observedAt]) {
+  if (!logView || !validKubernetesName(namespace) || !validKubernetesName(deployment) ||
+      !Number.isFinite(Date.parse(observedAt))) throw new Error("invalid_runtime_check_scope");
+  const pending = await loadPending();
+  const changes = await auditChanges(deployment, namespace, observedAt);
+  const beforeSnapshot = changes.filter(change => Date.parse(change.timestamp) <= Date.parse(observedAt));
+  console.log(JSON.stringify({event:"signaldeck_investigator_check_completed",
+    pending_workloads:pending.length, matching_audit_records:changes.length,
+    successful_scale_to_zero_before_snapshot:beforeSnapshot.some(change => !change.failed && change.replicas === 0)}));
+}
+try {
+  const args = process.argv.slice(2);
+  if (args.length === 0) await main();
+  else if (args[0] === "--check" && args.length === 4) await checkRuntime(args.slice(1));
+  else throw new Error("usage: job.js [--check <namespace> <deployment> <observed-at>]");
+}catch(error){
   console.error("signaldeck_investigator_failed",error?.message??"unknown");
   process.exitCode=1;
 }finally{await pool.end()}

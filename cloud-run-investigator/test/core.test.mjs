@@ -1,12 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {analyzeScaleIncident,replicaCount,summarizeGkeAudit} from "../core.js";
+import {analyzeScaleIncident,auditLogResource,replicaCount,summarizeGkeAudit} from "../core.js";
 
 const incident={incident_at:"2026-11-17T13:00:00Z"};
 const snapshot={source_type:"k8s_event",payload:{deployment:"inventory",namespace:"signaldeck-lab",desired_replicas:0}};
 const audit={id:"abc",timestamp:"2026-11-17T12:59:50Z",
  method:"io.k8s.apps.v1.deployments.scale.patch",principal:"human@example.test",
  resource:"apps/v1/namespaces/signaldeck-lab/deployments/inventory/scale",replicas:0};
+test("scope audit reads to a configured log view in the job's project", () => {
+  const suffix = "/locations/global/buckets/_Required/views/investigator-gke";
+  const view = "projects/lab-project" + suffix;
+  assert.equal(auditLogResource("lab-project", view), view);
+  assert.equal(auditLogResource("lab-project"), "projects/lab-project");
+  assert.throws(() => auditLogResource("lab-project", "projects/other-project" + suffix), /invalid_gcp_log_view/);
+  assert.throws(() => auditLogResource("lab-project", "projects/lab-project"), /invalid_gcp_log_view/);
+});
 test("parse requested replicas without guessing",()=>{
  assert.equal(replicaCount({spec:{replicas:0}}),0);
  assert.equal(replicaCount({spec:{replicas:1}}),1);

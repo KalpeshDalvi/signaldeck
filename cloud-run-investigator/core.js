@@ -5,6 +5,15 @@ const WINDOW_MS = 5 * 60_000;
 export function validKubernetesName(value) {
   return typeof value === "string" && VALID_NAME.test(value);
 }
+export function auditLogResource(project, view) {
+  if (!view) return `projects/${project}`;
+  const prefix = `projects/${project}/locations/`;
+  const path = /^[a-z0-9-]+\/buckets\/[\w.-]+\/views\/[\w.-]+$/;
+  if (!view.startsWith(prefix) || !path.test(view.slice(prefix.length))) {
+    throw new Error("invalid_gcp_log_view");
+  }
+  return view;
+}
 export function replicaCount(request) {
   if (!request || typeof request !== "object") return null;
   const raw = request.spec?.replicas ?? request.replicas;
