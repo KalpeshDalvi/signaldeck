@@ -63,6 +63,7 @@ Passing CI only establishes that syntax, build and tests succeed in disposable e
 - Deploy read API, ingestion service and dashboard with existing Cloud Run auth and secret mappings.
 - Set archive flag **only after** schema/privilege checks. Keep `SIGNALDECK_ARCHIVE_ENABLED=false` by default.
 - Create a separate investigator service account with **Cloud Logging read-only** and narrowly scoped Cloud SQL writes, then deploy/run the Cloud Run Job.
+- The first provider smoke test uses the bundled synthetic incident. Run `npm --prefix cloud-run-investigator run trial:ai` with Application Default Credentials and explicit `SIGNALDECK_GCP_PROJECT_ID` and `SIGNALDECK_VERTEX_MODEL`. Set `SIGNALDECK_VERTEX_REGION` to a supported endpoint (the trial defaults to `us`). This command makes one model request and has no archive database connection.
 - Enable `SIGNALDECK_AI_ENABLED=true` and a validated model only after reviewing sensitive data policy and a Vertex AI spending limit. The application limits to 2 model analyses per job execution, but a recurring schedule requires an external budget safeguard.
 - Confirm a controlled new failure remains reconstructable after the raw telemetry record expires.
 - Do not deploy with a broad public allow-unauthenticated permission or use the GKE collector's ingestion key for privileged evidence analysis.

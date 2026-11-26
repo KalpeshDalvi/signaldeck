@@ -139,9 +139,10 @@ async function analyzeApplicationIncidents() {
   let completed=0;
   for(const incident of pending.rows) {
     const source=await pool.query(`
-      SELECT source_type,source_event_id,source_event_at,resource_name,summary,payload
+      SELECT source_type,source_event_id,source_event_at,resource_name,payload
       FROM public.investigation_evidence
       WHERE workspace_id=$1 AND investigation_id=$2
+        AND source_type IN ('trace', 'application_log')
       ORDER BY source_event_at ASC LIMIT 20
     `,[workspace,incident.id]);
     if(!source.rows.length)continue;
@@ -149,17 +150,19 @@ async function analyzeApplicationIncidents() {
       incident,evidence:source.rows,project,
       region,model
     });
-    const limitation=`AI-assisted hypothesis only; root cause not independently verified. ${finding.uncertainties} Source IDs: ${finding.evidence_ids.join(", ")}`.slice(0,2400);
-    await pool.query(`
+    const boundary = "AI-assisted hypothesis only; root cause not independently verified. ";
+    const citations = ` Source IDs: ${finding.evidence_ids.join(", ")}`;
+    const uncertainty = finding.uncertainties.slice(0, 2400 - boundary.length - citations.length);
+    const { rowCount } = await pool.query(`
       UPDATE public.investigations
       SET hypothesis=$3, immediate_recovery=$4,
           recurrence_prevention=$5,verification_plan=$6,
           limitations=$7,updated_at=now()
       WHERE workspace_id=$1 AND id=$2 AND verified_mechanism IS NULL
         AND hypothesis='Failure signal observed; underlying cause is not yet verified'
-    `,[workspace,incident.id,`AI-assisted hypothesis: ${finding.hypothesis}. Observed mechanism: ${finding.failure_mechanism}`,
-      finding.immediate_fix,finding.permanent_fix,finding.validation_steps.join("; "),limitation]);
-    completed++;
+    `,[workspace,incident.id,`AI-assisted hypothesis: ${finding.hypothesis}. Possible mechanism: ${finding.failure_mechanism}`,
+      finding.immediate_fix,finding.permanent_fix,finding.validation_steps.join("; "),boundary + uncertainty + citations]);
+    completed += rowCount;
   }
   return completed;
 }
