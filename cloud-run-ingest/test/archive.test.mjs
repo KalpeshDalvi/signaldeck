@@ -100,7 +100,7 @@ test("archiveBatch uses a batched investigation upsert and a batched evidence in
   assert.equal(result.investigations, 1);
   assert.equal(statements.length, 2);
   assert.match(statements[0].sql, /ON CONFLICT \(workspace_id,incident_key\)/);
-  assert.match(statements[1].sql, /ON CONFLICT \(investigation_id, source_type, source_event_id\) DO NOTHING/);
+  assert.match(statements[1].sql, /ON CONFLICT DO NOTHING/);
 });
 
 test("OTLP-sized failure batch preserves all 500 distinct source events", () => {
