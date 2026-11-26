@@ -1,5 +1,5 @@
 import { workspaceId } from "./workspace";
-import { GoogleAuth } from "google-auth-library";
+import { getReadApiIdentityToken } from "./read-api-auth";
 
 export type SignalType = "log" | "trace" | "metric" | "k8s_event" | "deployment";
 
@@ -79,9 +79,7 @@ export async function readTelemetry(limit = 100, signalType?: SignalType, reques
       if (traceFilters?.from && traceFilters?.to) { endpoint.searchParams.set("from", traceFilters.from); endpoint.searchParams.set("to", traceFilters.to); }
     }
     const audience = new URL(readApiUrl).origin;
-    const identityClient = await new GoogleAuth().getIdTokenClient(audience);
-    const identityHeaders = await identityClient.getRequestHeaders(audience);
-    const identityToken = identityHeaders.Authorization ?? identityHeaders.authorization;
+    const identityToken = await getReadApiIdentityToken(audience);
     if (!identityToken) throw new Error("Unable to obtain Cloud Run identity token");
     const response = await fetch(endpoint, {
       headers: { Authorization: `Bearer ${key}`, "X-Serverless-Authorization": identityToken },
@@ -133,9 +131,7 @@ export async function readTelemetryCoverage(window: { from: string; to: string }
   endpoint.searchParams.set("to", window.to);
   try {
     const audience = new URL(base).origin;
-    const identity = await new GoogleAuth().getIdTokenClient(audience);
-    const headers = await identity.getRequestHeaders(audience);
-    const token = headers.Authorization ?? headers.authorization;
+    const token = await getReadApiIdentityToken(audience);
     if (!token) return null;
     const response = await fetch(endpoint, {
       headers: { Authorization: `Bearer ${key}`, "X-Serverless-Authorization": token },

@@ -32,7 +32,9 @@ export function summarizeServices(records: TelemetryRecord[]): ServiceSummary[] 
 
   for (const record of requestRecords) {
     const key = `${record.environment}:${record.service_name}`;
-    grouped.set(key, [...(grouped.get(key) ?? []), record]);
+    const group = grouped.get(key);
+    if (group) group.push(record);
+    else grouped.set(key, [record]);
   }
 
   return [...grouped.values()]
