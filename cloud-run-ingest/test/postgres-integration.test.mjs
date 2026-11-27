@@ -68,6 +68,7 @@ test("OTLP persists durable evidence with the documented ingest and reader grant
 
     const migrate = (name) => admin.query(readFileSync(new URL(`cloud-sql/migrations/${name}`, root), "utf8"));
     await migrate("001_bootstrap.sql");
+    await migrate("002_telemetry_retention.sql");
     await migrate("003_durable_investigations.sql");
     await migrate("003_durable_investigations.sql");
     // Mirror the deployed table grants with fixture roles in the disposable database.
@@ -115,9 +116,18 @@ test("OTLP persists durable evidence with the documented ingest and reader grant
     );
     assert.ok(raw.rows.some((row) => row.trace_id === failure.traceId && row.status_code === 500));
     assert.equal(raw.rows.filter((row) => row.trace_id === healthy.traceId && row.status_code === 200).length, 1);
-    // Simulate expiration of the failed trace in this disposable database.
-    const removed = await admin.query("DELETE FROM public.telemetry_events WHERE trace_id = $1", [failure.traceId]);
-    assert.ok(removed.rowCount > 0);
+    // Age only the failed trace, then exercise the raw telemetry cleanup procedure.
+    const aged = await admin.query(
+      "UPDATE public.telemetry_events SET created_at = now() - interval '8 days' WHERE trace_id = $1",
+      [failure.traceId],
+    );
+    assert.ok(aged.rowCount > 0);
+    await admin.query("CALL public.cleanup_old_telemetry(7)");
+    const remaining = await admin.query(
+      "SELECT trace_id FROM public.telemetry_events WHERE trace_id IN ($1, $2)",
+      [failure.traceId, healthy.traceId],
+    );
+    assert.deepEqual(remaining.rows, [{ trace_id: healthy.traceId }]);
 
     const readerEnv = { ...env, PGUSER: "signaldeck_test_reader", SIGNALDECK_READ_KEY: key };
     const reader = await startService(t, "cloud-run-read-api/server.js", 18080, readerEnv);

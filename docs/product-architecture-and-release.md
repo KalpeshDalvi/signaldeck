@@ -30,7 +30,9 @@ flowchart LR
 
 ## Functional acceptance
 
-| Feature | Source code | Validation still required |
+See the [live pilot checkpoints](CODEX_HANDOFF.md) for completed release verification. The table lists release gates and follow-up coverage.
+
+| Feature | Source code | Release gates and follow-up coverage |
 |---|---|---|
 | Real distributed tracing | Existing application + collector | Fresh lab traces, parent-child spans, sampling coverage |
 | Kubernetes state | Existing collector and dashboard | Watch-mode Deployment snapshots and Event coverage |
@@ -89,6 +91,6 @@ The saved investigation page downloads a Markdown draft with the original eviden
 
 Do not confuse `min-instances=0` with fully stopped infrastructure. Cloud SQL compute and GKE management/node/pod billing can continue. For a safe low-impact pause, `scripts/pause-signaldeck-lab-safe.ps1` stops only the lab traffic generator with `-Apply`. For a fuller pause, `lab-stop.ps1 -Apply` records all SignalDeck-only deployment replica counts then scales those deployments to zero, without resizing or deleting GKE nodes; `lab-start.ps1 -Apply` restores from the saved local state. Stopping `signaldeck-db` requires the additional explicit `-StopCloudSql` flag after confirming that no Spacical service depends on it. Consult Cloud Billing and verify Spacical service dependencies before stopping a database or cluster. No automated shutdown was applied by this branch.
 
-## Code state
+## Release state
 
-This branch is a **draft feature PR**. Until the protected checks and authorized GCP deployment are performed, it is release-candidate code, not a live or fully verified product. It can be reviewed and merged without local PowerShell work after CI passes; deployment requires GCP access.
+The IAP-protected internal pilot is live. The latest revisions, lab results, and rollback points are recorded in the [handoff](CODEX_HANDOFF.md).
