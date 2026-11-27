@@ -143,16 +143,22 @@ async function analyzeApplicationIncidents() {
       FROM public.investigation_evidence
       WHERE workspace_id=$1 AND investigation_id=$2
         AND source_type IN ('trace', 'application_log')
-      ORDER BY source_event_at ASC LIMIT 20
+      ORDER BY source_event_at ASC, id ASC LIMIT 20
     `,[workspace,incident.id]);
     if(!source.rows.length)continue;
     const finding=await generateEvidenceBoundAnalysis({
       incident,evidence:source.rows,project,
       region,model
     });
-    const boundary = "AI-assisted hypothesis only; root cause not independently verified. ";
-    const citations = ` Source IDs: ${finding.evidence_ids.join(", ")}`;
-    const uncertainty = finding.uncertainties.slice(0, 2400 - boundary.length - citations.length);
+    const observations = finding.observations.map(item =>
+      `${item.statement} [Source IDs: ${item.evidence_ids.join(", ")}]`).join(" ");
+    const handling = finding.observations.some(item => item.claim === "response_handling");
+    const dependency = finding.observations.some(item => item.claim === "dependency_response" || item.claim === "response_handling");
+    const limitations = [
+      "Root cause remains unverified.",
+      handling ? "The application log records the response mapping." : "Application response handling remains unknown.",
+      dependency ? "The cause of the dependency response remains unknown." : null,
+    ].filter(Boolean).join(" ");
     const { rowCount } = await pool.query(`
       UPDATE public.investigations
       SET hypothesis=$3, immediate_recovery=$4,
@@ -160,8 +166,9 @@ async function analyzeApplicationIncidents() {
           limitations=$7,updated_at=now()
       WHERE workspace_id=$1 AND id=$2 AND verified_mechanism IS NULL
         AND hypothesis='Failure signal observed; underlying cause is not yet verified'
-    `,[workspace,incident.id,`AI-assisted hypothesis: ${finding.hypothesis}. Possible mechanism: ${finding.failure_mechanism}`,
-      finding.immediate_fix,finding.permanent_fix,finding.validation_steps.join("; "),boundary + uncertainty + citations]);
+    `,[workspace,incident.id,`AI-assisted observations: ${observations}`,
+      `Proposed: ${finding.immediate_fix}`,`Proposed: ${finding.permanent_fix}`,
+      finding.validation_steps.join("; "),limitations]);
     completed += rowCount;
   }
   return completed;

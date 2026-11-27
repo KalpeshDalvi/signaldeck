@@ -68,6 +68,12 @@ Passing CI only establishes that syntax, build and tests succeed in disposable e
 - Confirm a controlled new failure remains reconstructable after the raw telemetry record expires.
 - Do not deploy with a broad public allow-unauthenticated permission or use the GKE collector's ingestion key for privileged evidence analysis.
 
+## Structured application evidence
+
+An instrumented application can record response handling as an OTLP error log on the incoming server span. Send the original trace and span IDs with `signaldeck.event.name=dependency_error_mapped_to_http_response`, integer `signaldeck.dependency.status_code`, and integer `http.response.status_code`. The archive keeps the two validated HTTP codes. The investigator matches the log to a server span and a single direct dependency span in the same archived investigation. The timestamps and HTTP codes must agree.
+
+The model selects typed observations and cites a source for each one. SignalDeck renders and saves those observations from the cited facts, with the original archive IDs. The response mapping cites the log and both spans. The cause of the dependency response remains unknown until independently established. Recovery and prevention suggestions are labeled as proposals.
+
 ## Cloud cost policy
 
 Do not confuse `min-instances=0` with fully stopped infrastructure. Cloud SQL compute and GKE management/node/pod billing can continue. For a safe low-impact pause, `scripts/pause-signaldeck-lab-safe.ps1` stops only the lab traffic generator with `-Apply`. For a fuller pause, `lab-stop.ps1 -Apply` records all SignalDeck-only deployment replica counts then scales those deployments to zero, without resizing or deleting GKE nodes; `lab-start.ps1 -Apply` restores from the saved local state. Stopping `signaldeck-db` requires the additional explicit `-StopCloudSql` flag after confirming that no Spacical service depends on it. Consult Cloud Billing and verify Spacical service dependencies before stopping a database or cluster. No automated shutdown was applied by this branch.

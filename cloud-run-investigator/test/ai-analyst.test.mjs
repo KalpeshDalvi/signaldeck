@@ -21,13 +21,10 @@ const trace = {
   },
 };
 const validAnalysis = {
-  hypothesis: "The initiating condition needs verification.",
-  failure_mechanism: "The affected service received an HTTP failure on a dependency span.",
+  observations: [{ claim: "dependency_response", evidence_id: "E1" }],
   immediate_fix: "Inspect readiness and endpoint membership.",
   permanent_fix: "Confirm the failure mode before choosing a prevention measure.",
   validation_steps: ["Compare one successful request with the failed request."],
-  uncertainties: "The trace does not identify a change or actor.",
-  evidence_ids: ["E1"],
 };
 const model = { project: "test-project", region: "us-central1", model: "fixture-model" };
 
@@ -62,16 +59,66 @@ test("packet limit applies to qualifying rows and excludes malformed evidence ID
   assert.equal(input.evidence.at(-1).id, "E16");
 });
 
-test("accepted model references map back to original archive source IDs", () => {
-  const { sourceIds } = evidencePacket(incident, [trace]);
-  const result = validateAnalysis({ ...validAnalysis, evidence_ids: ["E1", "E1"], verified: true }, sourceIds);
+test("each saved observation is rendered from its cited source", () => {
+  const packet = evidencePacket(incident, [trace]);
+  const result = validateAnalysis({
+    ...validAnalysis,
+    observations: [{ ...validAnalysis.observations[0], statement: "Invented causal claim" }],
+    verified: true,
+  }, packet);
+  assert.deepEqual(result.observations, [{
+    claim: "dependency_response",
+    statement: "The dependency client span recorded HTTP 503.",
+    evidence_ids: [trace.source_event_id],
+  }]);
   assert.deepEqual(result.evidence_ids, [trace.source_event_id]);
   assert.equal("verified" in result, false);
-  for (const evidence_ids of [["invented"], [trace.source_event_id], []]) {
-    assert.throws(() => validateAnalysis({ ...validAnalysis, evidence_ids }, sourceIds), /unsupported_ai_citation/);
+  for (const evidence_id of ["invented", trace.source_event_id]) {
+    assert.throws(() => validateAnalysis({
+      ...validAnalysis, observations: [{ claim: "dependency_response", evidence_id }],
+    }, packet), /unsupported_ai_citation/);
   }
-  assert.throws(() => validateAnalysis({ ...validAnalysis, validation_steps: [" "] }, sourceIds), /invalid_ai_validation_steps/);
-  assert.throws(() => validateAnalysis({ ...validAnalysis, hypothesis: "" }, sourceIds), /invalid_ai_field_hypothesis/);
+  assert.throws(() => validateAnalysis({ ...validAnalysis, observations: [] }, packet), /invalid_ai_observations/);
+  assert.throws(() => validateAnalysis({ ...validAnalysis, validation_steps: [" "] }, packet), /invalid_ai_validation_steps/);
+  assert.throws(() => validateAnalysis({ ...validAnalysis, immediate_fix: "" }, packet), /invalid_ai_field_immediate_fix/);
+  assert.throws(() => validateAnalysis({
+    ...validAnalysis, observations: [{ claim: "response_handling", evidence_id: "E1" }],
+  }, packet), /unsupported_ai_claim/);
+});
+
+test("response handling requires a matching log, parent span and dependency span", () => {
+  const server = {
+    ...trace, source_event_id: "original-server", source_event_at: incident.incident_at,
+    payload: { ...trace.payload, span_kind: "SPAN_KIND_SERVER", span_id: "private-server",
+      duration_ms: 820, status_code: 500 },
+  };
+  const log = {
+    ...trace, source_type: "application_log", source_event_id: "original-log",
+    source_event_at: "2026-11-17T13:00:00.795Z",
+    payload: { trace_id: trace.payload.trace_id, span_id: server.payload.span_id, severity: "ERROR",
+      response_handling: { dependency_status_code: 503, response_status_code: 500 },
+      excerpt: "private-untrusted-message" },
+  };
+  const client = {
+    ...trace, payload: { ...trace.payload, parent_span_id: server.payload.span_id, duration_ms: 660 },
+  };
+  const packet = evidencePacket(incident, [server, client, log]);
+  assert.equal(packet.input.evidence[2].available_claim, "response_handling");
+  assert.ok(!JSON.stringify(packet.input).includes("private-"));
+  const response = { ...validAnalysis, observations: [{ claim: "response_handling", evidence_id: "E3" }] };
+  const finding = validateAnalysis(response, packet);
+  assert.deepEqual(finding.observations[0].evidence_ids, [log.source_event_id, server.source_event_id, client.source_event_id]);
+  assert.match(finding.observations[0].statement, /HTTP 503 to HTTP 500/);
+
+  for (const badLog of [
+    { ...log, source_event_at: "2026-11-17T13:00:00.200Z" },
+    { ...log, payload: { ...log.payload, trace_id: "another-trace" } },
+    { ...log, payload: { ...log.payload, response_handling: { dependency_status_code: 502, response_status_code: 500 } } },
+  ]) {
+    const uncorroborated = evidencePacket(incident, [server, client, badLog]);
+    assert.equal(uncorroborated.input.evidence[2].available_claim, "application_error");
+    assert.throws(() => validateAnalysis(response, uncorroborated), /unsupported_ai_claim/);
+  }
 });
 
 test("synthetic trial makes one structured model request and maps both references", async () => {
@@ -92,7 +139,10 @@ test("synthetic trial makes one structured model request and maps both reference
       assert.equal(input.evidence[0].span, input.evidence[1].facts.parent_span);
       assert.ok(!options.body.includes("trial-checkout") && !options.body.includes("trial-inventory"));
       return Response.json({ candidates: [{ finishReason: "STOP", content: {
-        parts: [{ text: JSON.stringify({ ...validAnalysis, evidence_ids: ["E1", "E2"] }) }],
+        parts: [{ text: JSON.stringify({ ...validAnalysis, observations: [
+          { claim: "server_response", evidence_id: "E1" },
+          { claim: "dependency_response", evidence_id: "E2" },
+        ] }) }],
       } }] });
     },
   });
