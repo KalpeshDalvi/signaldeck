@@ -242,10 +242,10 @@ test("archived checkout findings require claim-specific evidence from OTLP to re
       await publish("traces", fixture.traces);
       if (entry.hasLog) await publish("logs", fixture.logs);
     }
-    await admin.query(`
+    const { rows: [outside] } = await admin.query(`
       INSERT INTO public.investigations (workspace_id, incident_key, incident_at, environment, hypothesis)
       VALUES ('claim-other','app:lab:other-fixture', now(), 'lab',
-        'Failure signal observed; underlying cause is not yet verified')
+        'Failure signal observed; underlying cause is not yet verified') RETURNING id
     `);
     const listPath = `${reader.origin}/v1/investigations`;
     const readArchive = async url => {
@@ -256,9 +256,9 @@ test("archived checkout findings require claim-specific evidence from OTLP to re
     const before = await readArchive(listPath);
     assert.equal(before.investigations.length, 2);
 
-    const runJob = async unsupported => runFile(process.execPath, [
+    const runJob = async (unsupported, ...args) => runFile(process.execPath, [
       "--import", new URL("cloud-run-investigator/test/fixtures/mock-vertex.mjs", root).href,
-      "cloud-run-investigator/job.js",
+      "cloud-run-investigator/job.js", ...args,
     ], { cwd: root, env: {
       ...process.env, ...env, PGUSER: "signaldeck_claim_investigator", SIGNALDECK_AI_ENABLED: "true",
       SIGNALDECK_TEST_UNSUPPORTED_CLAIM: String(unsupported), SIGNALDECK_GKE_CLUSTER: "fixture-cluster",
@@ -270,8 +270,15 @@ test("archived checkout findings require claim-specific evidence from OTLP to re
       assert.match(error.stderr, /unsupported_ai_claim/);
       return true;
     });
+    await assert.rejects(runJob(false, "--analyze-incident", outside.id), { stderr: /app_incident_not_eligible/ });
     assert.deepEqual(await readArchive(listPath), before);
-    assert.equal(JSON.parse((await runJob(false)).stdout).ai_findings, 2);
+    const target = before.investigations.find(record => record.impacted_service === "trace-with-log");
+    assert.deepEqual(JSON.parse((await runJob(false, "--analyze-incident", target.id)).stdout), {
+      event: "signaldeck_targeted_analysis_completed", ai_findings: 1,
+    });
+    const remaining = (await readArchive(listPath)).investigations.find(record => record.impacted_service === "trace-only");
+    assert.equal(remaining.hypothesis, "Failure signal observed; underlying cause is not yet verified");
+    assert.equal(JSON.parse((await runJob(false)).stdout).ai_findings, 1);
     assert.equal(JSON.parse((await runJob(false)).stdout).ai_findings, 0);
     const { rows: [other] } = await admin.query("SELECT hypothesis FROM public.investigations WHERE workspace_id='claim-other'");
     assert.equal(other.hypothesis, "Failure signal observed; underlying cause is not yet verified");

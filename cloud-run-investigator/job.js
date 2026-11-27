@@ -121,7 +121,7 @@ async function saveFinding(row,changes) {
   finally{client.release()}
 }
 const AI_ENABLED=process.env.SIGNALDECK_AI_ENABLED==="true";
-async function analyzeApplicationIncidents() {
+async function analyzeApplicationIncidents(incidentId = null) {
   if(!AI_ENABLED) return 0;
   const model=process.env.SIGNALDECK_VERTEX_MODEL;
   if(!model) throw new Error("SIGNALDECK_VERTEX_MODEL required when AI is enabled");
@@ -134,8 +134,9 @@ async function analyzeApplicationIncidents() {
       AND verified_mechanism IS NULL
       AND hypothesis='Failure signal observed; underlying cause is not yet verified'
       AND incident_at >=now()-INTERVAL '24 hours'
-    ORDER BY incident_at DESC LIMIT 2
-  `,[workspace]);
+      AND ($2::uuid IS NULL OR id=$2)
+    ORDER BY incident_at DESC LIMIT $3
+  `,[workspace,incidentId,incidentId ? 1 : 2]);
   let completed=0;
   for(const incident of pending.rows) {
     const source=await pool.query(`
@@ -187,6 +188,16 @@ async function main() {
   console.log(JSON.stringify({event:"signaldeck_investigator_completed",
     checked:processed,archived:enriched,without_matching_audit:withoutMatch,ai_findings:aiFindings}));
 }
+async function analyzeSingleIncident(id) {
+  if (!AI_ENABLED) throw new Error("ai_analysis_disabled");
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) {
+    throw new Error("invalid_analysis_incident_id");
+  }
+  const findings = await analyzeApplicationIncidents(id);
+  if (!findings) throw new Error("app_incident_not_eligible");
+  console.log(JSON.stringify({event:"signaldeck_targeted_analysis_completed",ai_findings:findings}));
+}
+
 async function checkRuntime([namespace, deployment, observedAt]) {
   if (!logView || !validKubernetesName(namespace) || !validKubernetesName(deployment) ||
       !Number.isFinite(Date.parse(observedAt))) throw new Error("invalid_runtime_check_scope");
@@ -201,7 +212,8 @@ try {
   const args = process.argv.slice(2);
   if (args.length === 0) await main();
   else if (args[0] === "--check" && args.length === 4) await checkRuntime(args.slice(1));
-  else throw new Error("usage: job.js [--check <namespace> <deployment> <observed-at>]");
+  else if (args[0] === "--analyze-incident" && args.length === 2) await analyzeSingleIncident(args[1]);
+  else throw new Error("usage: job.js [--check <namespace> <deployment> <observed-at> | --analyze-incident <uuid>]");
 }catch(error){
   console.error("signaldeck_investigator_failed",error?.message??"unknown");
   process.exitCode=1;
