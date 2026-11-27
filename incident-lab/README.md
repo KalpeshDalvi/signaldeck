@@ -82,6 +82,8 @@ Return the lab to healthy state:
 .\incident-lab\failure-scenarios.ps1 -Scenario recover
 ```
 
+A single lab checkout request with `x-failure-mode: dependency-error` makes the existing inventory endpoint return HTTP 500. Checkout returns HTTP 500 and exports one structured response-handling log on its server span. The investigator can cite the log, checkout span, and dependency span together.
+
 ### Expected evidence
 
 `latency` should increase checkout trace duration and expose the slow dependency in the trace waterfall.

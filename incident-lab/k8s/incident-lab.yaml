@@ -119,6 +119,8 @@ spec:
               value: http://inventory:8080
             - name: OTEL_SERVICE_NAME
               value: checkout
+            - name: OTEL_LOGS_EXPORTER
+              value: otlp
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://signaldeck-collector.signaldeck-system.svc.cluster.local:4317
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
