@@ -7,10 +7,12 @@ from wsgiref.simple_server import make_server
 
 from opentelemetry import trace
 from opentelemetry._logs import SeverityNumber, set_logger_provider
+from opentelemetry.exporter.otlp.proto.common._internal._log_encoder import encode_logs
 from opentelemetry.instrumentation.flask import FlaskInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogExporter, SimpleLogRecordProcessor
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -31,7 +33,7 @@ class CheckoutResponseEvidenceTests(unittest.TestCase):
         cls.log_exporter = InMemoryLogExporter()
         tracer = TracerProvider()
         tracer.add_span_processor(SimpleSpanProcessor(cls.span_exporter))
-        logger = LoggerProvider()
+        logger = LoggerProvider(resource=Resource.create({"service.name": "checkout"}))
         logger.add_log_record_processor(SimpleLogRecordProcessor(cls.log_exporter))
         set_logger_provider(logger)
 
@@ -77,11 +79,16 @@ class CheckoutResponseEvidenceTests(unittest.TestCase):
         self.assertEqual(event.severity_number, SeverityNumber.ERROR)
         self.assertLessEqual(dependency.end_time, event.timestamp)
         self.assertLessEqual(event.timestamp, server.end_time)
-        self.assertEqual(dict(event.attributes), {
-            "signaldeck.event.name": "dependency_error_mapped_to_http_response",
-            "signaldeck.dependency.status_code": 500,
-            "http.response.status_code": 500,
-        })
+        packet = encode_logs(logs).resource_logs[0]
+        serialized = packet.scope_logs[0].log_records[0]
+        attributes = {item.key: item.value for item in serialized.attributes}
+        resource = {item.key: item.value for item in packet.resource.attributes}
+        self.assertEqual(resource["service.name"].string_value, "checkout")
+        self.assertEqual(attributes["signaldeck.event.name"].string_value, "dependency_error_mapped_to_http_response")
+        self.assertEqual(attributes["signaldeck.dependency.status_code"].int_value, 500)
+        self.assertEqual(attributes["http.response.status_code"].int_value, 500)
+        self.assertEqual(serialized.trace_id.hex(), f"{server.context.trace_id:032x}")
+        self.assertEqual(serialized.span_id.hex(), f"{server.context.span_id:016x}")
 
     def test_healthy_and_local_failures_emit_no_dependency_mapping(self):
         healthy = self.checkout_with_mode("none")
