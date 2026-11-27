@@ -1,6 +1,6 @@
 # SignalDeck -> Codex / VS Code continuity handoff
 
-**Latest verified checkpoint:** 2026-11-26 Central. The internal pilot is live. Two controlled GKE checkout failures passed evidence persistence, targeted AI finding validation, and signed-in dashboard checks. See section 5 for the archive fix and the pilot latency baseline. Reverify live state before changing infrastructure.
+**Latest verified checkpoint:** 2026-11-26 Central. The internal pilot release serves the signed-in dashboard with incident history, shared in-app alerts, durable evidence and draft postmortems. The checkout SDK batch tuning is live. Section 5 records release checks, latency measurements, and rollback targets. Reverify live state before changing infrastructure.
 
 ## 1. End goal and scope
 
@@ -91,7 +91,7 @@ Critical repo paths:
 | M3 Cloud Run | `signaldeck-ingest-grounding-v1` serves 100% of ingest traffic. Collector trace and log POSTs returned HTTP 202 | Rollback revision is `signaldeck-ingest-00008-xil` |
 | M3 feature flag | Active ingest `/ready` returned HTTP 200 with `archive_enabled:true` | — |
 | Investigator | Audit write and replay passed against a controlled lab workload. Separate targeted runs saved evidence-backed findings for a downstream HTTP 500 and a checkout-local HTTP 500 | Audit-only by default. Additional evidence sources and failure modes need their own validation |
-| Internal pilot | Dashboard serves the consolidated pilot with incident lifecycle and history, archived evidence, and Central Time timestamps | Notifications, measured performance, retention, and broader RCA coverage |
+| Internal pilot | Live incident lifecycle and history, shared in-app alerts, evidence-linked Markdown drafts, and Central Time timestamps | External paging, managed production retention, and broader RCA coverage are separate release decisions |
 
 The original release roadmap in `docs/product-roadmap.md` calls separate streams M0 (prototype), M1 (incident center), M2 (persistence), M3 (change correlation), M4 (tracing), M5 (Kubernetes), M6 (SRE assistant), M7 (notifications), M8 (scale). Those remain product-level milestones, not reliable implementation status. The working team has also called the **durable archive rollout** “Milestone 3”; use the specific feature name to avoid ambiguity.
 
@@ -194,9 +194,20 @@ The original release roadmap in `docs/product-roadmap.md` calls separate streams
 
 - Across four archived records from two controlled GKE checkout failures, the time from OTLP observation to archive capture was 2.55–8.86 seconds. This includes SDK and collector batching. The earlier synthetic fixture used backdated observations and was excluded from these timings.
 - In a 24-hour Cloud Run request sample, the live read API median was 14.7 ms for the investigation list (34 requests) and 36.1 ms for details (11 requests). The signed-in dashboard detail median was 25.4 ms and its slowest request was 4.07 seconds (8 requests). All eight list/detail requests above one second across the dashboard and read API matched a new instance's startup within 15 seconds. These are pilot samples. The sampled live PostgreSQL queries used indexes and executed in less than 0.3 ms.
-- The checkout SDK and live collector each use a five-second batch interval. In a local Gunicorn and OTLP receiver trial with ten requests per setting, reducing the SDK interval to one second moved median time until all three records reached the receiver from 2.84 s to 0.56 s and increased exports from two to seven per signal. This tested SDK export only. The deployed batch and scaling settings were unchanged.
+- At the baseline, the checkout SDK and live collector each used a five-second batch interval. In a local Gunicorn and OTLP receiver trial with ten requests per setting, reducing the SDK interval to one second moved median time until all three records reached the receiver from 2.84 s to 0.56 s and increased exports from two to seven per signal. This tested SDK export only. The deployed batch and scaling settings were unchanged.
 - A single checkout-local HTTP 500 saved one server span. A separate request with three seconds of injected inventory latency returned HTTP 200. All three successful spans reached raw telemetry and no evidence from that trace was archived. The authenticated read API also returned the prior workload finding with its original successful scale-to-zero audit source ID. [GKE workload investigation](https://signaldeck-dashboard-4xugrlc6la-uc.a.run.app/investigations/87dbb103-dfc2-4b55-b208-b2701f1a0c48)
 - [One targeted run](https://console.cloud.google.com/run/jobs/executions/details/us-central1/signaldeck-investigator-l9p8t?project=signaldeck-lab-kd) saved the checkout-local HTTP 500 with its single original span citation. API read-back and signed-in Safari confirmed the finding, evidence timeline, and CST timestamp. The root cause is still unverified. The temporary Vertex permission was removed and verified absent. [Checkout-local investigation](https://signaldeck-dashboard-4xugrlc6la-uc.a.run.app/investigations/14887f72-e6e8-485c-b6ff-0aaebeb1e600) · [Issue #7 pilot acceptance](https://github.com/KalpeshDalvi/signaldeck/issues/7#issuecomment-7207959553)
+
+### Completed internal pilot release
+
+- [PR #15](https://github.com/KalpeshDalvi/signaldeck/pull/15) merged as `7bd3171`. It adds an IAP-protected Alerts inbox with one row per saved investigation, shared acknowledgement, and links to preserved evidence. Saved investigations now offer an evidence-cited Markdown draft with Central Time timestamps. [Post-merge product validation](https://github.com/KalpeshDalvi/signaldeck/actions/runs/45929465333) passed.
+- Cloud SQL backup `1795746922604` completed successfully before migration 006. The Cloud SQL managed import applied the additive receipt schema to the `signaldeck` database. Temporary read access to the single private staging object was removed and verified. The dashboard writer can select and insert receipts and cannot update or delete them.
+- A production-build browser test covered a fresh OTLP failure, an acknowledgement click, replay, a dashboard restart, raw fixture telemetry removal, and a draft download. Cross-workspace draft access returned 404. The live restricted database role wrote the checkout test receipt twice with a stable timestamp. The IAP-signed-in preview and canonical dashboard rendered the same acknowledgement, the evidence timeline, and the postmortem link. The signed-in Markdown request returned HTTP 200. [Alerts](https://signaldeck-dashboard-4xugrlc6la-uc.a.run.app/alerts)
+- `signaldeck-dashboard-pilot-alerts-v1` serves all traffic. The runtime settings and invoker IAM matched the baseline apart from the container image. The preview tag was removed after the signed-in checks. Rollback target is `signaldeck-dashboard-pilot-central-v1`.
+- [PR #16](https://github.com/KalpeshDalvi/signaldeck/pull/16) merged as `72918c3`. With 48 total requests and 12 controlled failures per setting through the live Collector version, the one-second checkout SDK interval lowered median delivery of complete failure evidence from 6.50 s to 3.13 s. The collector stayed at five seconds during the comparison. Both runs preserved all expected records, with three trace exports each and log exports increasing from two to three. [Post-merge product validation](https://github.com/KalpeshDalvi/signaldeck/actions/runs/45929852887) passed.
+- Checkout revision 4 has two ready replicas, with both SDK intervals set to one second. The inventory spec matched its baseline. A single controlled dependency error archived all three expected records in 3.11–4.35 seconds and raised one new alert. Rollback target is checkout revision 3. [Post-rollout case](https://signaldeck-dashboard-4xugrlc6la-uc.a.run.app/investigations/e63c580d-a1df-47c3-838a-82d43d09550a)
+- Under the observed resource limits, keeping one dashboard and one read API instance idle for 30 days is approximately USD 22.68 before credits and active requests. The pilot keeps scale to zero. [Cloud Run pricing](https://cloud.google.com/run/pricing)
+- The seven-day cleanup procedure removed aged raw fixtures and preserved the evidence in disposable PostgreSQL. The live database has the procedure, some older observations, and no installed `pg_cron`. Automatic deletion requires an approved operating schedule and retention policy. [Issue #7 pilot release](https://github.com/KalpeshDalvi/signaldeck/issues/7#issuecomment-7208411893)
 
 **Diagnostic sequence for future archive failures**
 
@@ -233,10 +244,10 @@ On the Mac, confirm `gcloud`, GKE auth plugin, `kubectl`, `jq` and `gh` are inst
 - Workspaces are isolated; read-only API never gains writer permission.
 - Write errors are explicit and collector retries are observable; do not misrepresent missing data as a healthy system.
 
-**Next product streams**
-1. Use a larger pilot sample to decide whether to shorten SDK or collector batching and whether to keep the dashboard or read API warm. Measure export volume and cost alongside the latency benefit.
-2. Extend evidence-backed RCA to additional failure modes using application, dependency, Kubernetes, and audit evidence. GKE egress and IP masquerading are deferred.
-3. Continue notifications, saved postmortems, role and workspace controls, managed retention, and cost guardrails.
+**Beyond the internal pilot**
+1. Select production paging destinations, escalation policies, and recipient scopes.
+2. Approve an automated retention schedule and pilot service budgets before expanding access.
+3. Extend causal validation to additional failure mechanisms and evaluate workspace membership and role isolation before multi-tenant use. The operator deferred GKE egress and IP masquerading.
 
 ## 7. Safe development workflow on the new Mac
 
@@ -258,4 +269,4 @@ Follow `AGENTS.md`; ask Codex to first produce a verified vs unverified status t
 
 ## 8. First Codex prompt
 
-> Read AGENTS.md, this handoff, docs/product-architecture-and-release.md, docs/milestone-3-deployment.md, docs/product-roadmap.md, and GitHub issue #7. Inspect the current main branch, CI, and runtime using read-only checks. The durable archive, internal pilot, deterministic investigator, and two targeted checkout AI cases have passed their live checks. Use the latest checkpoint to pick up the next unvalidated pilot work. Keep the evidence and uncertainty visible, and update issue #7 and this handoff after validation.
+> Read AGENTS.md, this handoff, docs/product-architecture-and-release.md, docs/milestone-3-deployment.md, docs/product-roadmap.md, and GitHub issue #7. Inspect the current main branch, CI, and runtime using read-only checks. The internal pilot release is live. Use the latest checkpoint and issue #7 to identify the next authorized production-readiness work. Keep the evidence and uncertainty visible, and update issue #7 and this handoff after validation.

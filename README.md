@@ -14,13 +14,13 @@ SignalDeck is an OpenTelemetry-native observability and incident-investigation p
 
 ## Development status
 
-**Working in the lab:** distributed checkout-to-inventory tracing; Kubernetes state views; evidence-driven correlation hypotheses; historical GKE scale-to-zero API investigation, initiating identity, and prevention suggestions.
+**Internal pilot is live on Google Cloud.** The IAP-protected dashboard supports incident lifecycle and history, distributed tracing, GKE evidence, and durable saved investigations. The Alerts page shows archived failures and workspace-shared acknowledgements. Each saved investigation can export a Markdown draft with its evidence IDs and Central Time timestamps.
 
-**Milestone 3 (code written, rollout pending):** automatically preserve newly ingested error spans, high-severity application logs (if collected), zero-replica Deployment snapshots (if observed), and Kubernetes warning events to a durable investigation/evidence archive. The feature is disabled until the migration is applied and `SIGNALDECK_ARCHIVE_ENABLED=true` is configured.
+A deterministic investigator links qualifying GKE audit changes to the archived findings. Targeted AI trials validated evidence citations and uncertainty on controlled checkout cases. The investigator defaults to audit-only.
 
-**Not yet complete:** automatic Cloud Audit Logs snapshots into the durable archive, incident grouping across long-running outages, verified AI root-cause analysis, comprehensive error-log collection, production-grade tenant isolation/retention/PII controls, and proactive user notifications.
+The production roadmap covers external paging, multi-tenant membership and permissions, managed retention, and broader causal validation. The archive preserves qualifying events received after it is enabled.
 
-The archive preserves only qualifying events **received after it is enabled**; it cannot restore expired October 22 raw telemetry.
+[Latest verified release and rollback checkpoints](docs/CODEX_HANDOFF.md)
 
 ## Build and test (PowerShell)
 
