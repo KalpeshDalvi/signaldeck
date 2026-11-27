@@ -81,8 +81,8 @@ jobs:
         run: node --test cloud-run-investigator/test/*.test.mjs
       - name: Install dashboard dependencies
         run: npm install --no-audit --no-fund
-      - name: Verify Central Time rendering
-        run: npx tsx --test lib/test/time.test.ts
+      - name: Verify archived evidence rendering
+        run: npx tsx --test lib/test/time.test.ts lib/test/investigation-postmortem.test.ts
       - name: Typecheck dashboard
         run: npx tsc --noEmit
       - name: Build dashboard
@@ -127,6 +127,10 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://postgres:ci-password@127.0.0.1:5432/signaldeck_test
         run: npx tsx --test lib/test/incident-postgres.test.ts
+      - name: Exercise alert acknowledgement with the restricted PostgreSQL role
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:ci-password@127.0.0.1:5432/signaldeck_test
+        run: npx tsx --test lib/test/investigation-acknowledgements.test.ts
 
   lab-telemetry:
     runs-on: ubuntu-latest
