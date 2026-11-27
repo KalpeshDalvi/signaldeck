@@ -28,6 +28,7 @@ export default async function SavedInvestigationPage({ params }: {
       title={`${record.impacted_service ?? "Unknown workload"} · ${record.environment}`}
       description={`Evidence recorded around ${formatCentralDateTime(record.incident_at)}`}>
       <span className="pill info">{record.status}</span>
+      <a href={`/investigations/${record.id}/postmortem`}>Download draft postmortem</a>
     </PageHeader>
     <p style={{ marginBottom: 16 }}><Link href="/investigations">All saved investigations</Link></p>
     <article className="panel" style={{ marginBottom: 16 }}>

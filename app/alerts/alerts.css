@@ -1,0 +1,26 @@
+.incident-alerts {
+  margin-bottom: 16px;
+}
+
+.incident-alert-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.incident-alert-list .alert-card {
+  flex-wrap: wrap;
+}
+
+.incident-alert-list .alert-card > div {
+  min-width: min(180px, 100%);
+}
+
+.incident-alert-list form button {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 10px;
+  color: var(--text);
+  background: var(--panel2);
+}

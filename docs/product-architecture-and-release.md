@@ -42,7 +42,8 @@ flowchart LR
 | Initiating GKE scale audit enrichment | New separate investigator job | Least-privilege identity, Cloud Logging permissions, Cloud SQL network, periodic job configuration |
 | Evidence-grounded remediation | New deterministic rules | Multi-event integration and blinded SRE review |
 | Optional Vertex AI analysis | New analyst module | Model/region choice, Vertex IAM, PII policy, quota and budget; disabled by default |
-| Notification delivery | Not configured | Select channel, dedup/rate limit, create outbox and reliable delivery |
+| Pilot incident alerts | IAP-protected Alerts inbox sourced from the saved archive | Verify one alert per investigation, durable shared acknowledgement, and evidence links |
+| Draft postmortems | Download from a saved investigation | Verify original source IDs, confidence boundaries, and workspace scope |
 | Production SaaS tenancy & billing | Not complete | Independent tenant identities, RLS/authorization, PII/retention, billing and security reviews |
 
 Passing CI only establishes that syntax, build and tests succeed in disposable environments. It does **not** establish all runtime services are deployed or the complete product is production-ready.
@@ -75,6 +76,14 @@ An instrumented application can record response handling as an OTLP error log on
 The model selects typed observations and cites a source for each one. SignalDeck renders and saves those observations from the cited facts, with the original archive IDs. The response mapping cites the log and both spans. The cause of the dependency response remains unknown until independently established. Recovery and prevention suggestions are labeled as proposals.
 
 For a controlled Cloud Run execution, use `job.js --analyze-incident <uuid>` with AI explicitly enabled for that execution. The job reads one eligible application investigation in the configured workspace and saves its validated analysis.
+
+## Pilot incident alerts and postmortems
+
+The Alerts page presents the latest 30 saved investigations as in-app notifications. The investigation ID is the alert identity. Ingest creates investigations and evidence in the same transaction, so a replay keeps the existing alert and its acknowledgement. The live error sample is still shown separately on the page.
+
+An acknowledgement is shared by responders in the pilot workspace. Apply `006_investigation_acknowledgements.sql` after migrations 003 and 005. The existing dashboard incident-writer role can read and insert receipts, with no update or delete permission on them. The workspace and investigation foreign key must match, and the server action takes its workspace from configuration. The dashboard continues to display archived evidence links if the receipt store is unavailable.
+
+The saved investigation page downloads a Markdown draft with the original evidence IDs, Central Time timestamps, and the archived confidence and follow-up fields. Exports are fetched through the workspace-scoped read API. They omit raw evidence payloads and label the document as a draft. This pilot channel is in-app. Any external delivery worker needs a separately configured receiver and delivery state.
 
 ## Cloud cost policy
 
