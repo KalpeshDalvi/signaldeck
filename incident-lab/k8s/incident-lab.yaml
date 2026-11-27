@@ -121,6 +121,10 @@ spec:
               value: checkout
             - name: OTEL_LOGS_EXPORTER
               value: otlp
+            - name: OTEL_BSP_SCHEDULE_DELAY
+              value: "1000"
+            - name: OTEL_BLRP_SCHEDULE_DELAY
+              value: "1000"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://signaldeck-collector.signaldeck-system.svc.cluster.local:4317
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
