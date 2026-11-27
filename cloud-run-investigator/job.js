@@ -121,7 +121,7 @@ async function saveFinding(row,changes) {
   finally{client.release()}
 }
 const AI_ENABLED=process.env.SIGNALDECK_AI_ENABLED==="true";
-async function analyzeApplicationIncidents() {
+async function analyzeApplicationIncidents(incidentId = null) {
   if(!AI_ENABLED) return 0;
   const model=process.env.SIGNALDECK_VERTEX_MODEL;
   if(!model) throw new Error("SIGNALDECK_VERTEX_MODEL required when AI is enabled");
@@ -134,32 +134,43 @@ async function analyzeApplicationIncidents() {
       AND verified_mechanism IS NULL
       AND hypothesis='Failure signal observed; underlying cause is not yet verified'
       AND incident_at >=now()-INTERVAL '24 hours'
-    ORDER BY incident_at DESC LIMIT 2
-  `,[workspace]);
+      AND ($2::uuid IS NULL OR id=$2)
+    ORDER BY incident_at DESC LIMIT $3
+  `,[workspace,incidentId,incidentId ? 1 : 2]);
   let completed=0;
   for(const incident of pending.rows) {
     const source=await pool.query(`
-      SELECT source_type,source_event_id,source_event_at,resource_name,summary,payload
+      SELECT source_type,source_event_id,source_event_at,resource_name,payload
       FROM public.investigation_evidence
       WHERE workspace_id=$1 AND investigation_id=$2
-      ORDER BY source_event_at ASC LIMIT 20
+        AND source_type IN ('trace', 'application_log')
+      ORDER BY source_event_at ASC, id ASC LIMIT 20
     `,[workspace,incident.id]);
     if(!source.rows.length)continue;
     const finding=await generateEvidenceBoundAnalysis({
       incident,evidence:source.rows,project,
       region,model
     });
-    const limitation=`AI-assisted hypothesis only; root cause not independently verified. ${finding.uncertainties} Source IDs: ${finding.evidence_ids.join(", ")}`.slice(0,2400);
-    await pool.query(`
+    const observations = finding.observations.map(item =>
+      `${item.statement} [Source IDs: ${item.evidence_ids.join(", ")}]`).join(" ");
+    const handling = finding.observations.some(item => item.claim === "response_handling");
+    const dependency = finding.observations.some(item => item.claim === "dependency_response" || item.claim === "response_handling");
+    const limitations = [
+      "Root cause remains unverified.",
+      handling ? "The application log records the response mapping." : "Application response handling remains unknown.",
+      dependency ? "The cause of the dependency response remains unknown." : null,
+    ].filter(Boolean).join(" ");
+    const { rowCount } = await pool.query(`
       UPDATE public.investigations
       SET hypothesis=$3, immediate_recovery=$4,
           recurrence_prevention=$5,verification_plan=$6,
           limitations=$7,updated_at=now()
       WHERE workspace_id=$1 AND id=$2 AND verified_mechanism IS NULL
         AND hypothesis='Failure signal observed; underlying cause is not yet verified'
-    `,[workspace,incident.id,`AI-assisted hypothesis: ${finding.hypothesis}. Observed mechanism: ${finding.failure_mechanism}`,
-      finding.immediate_fix,finding.permanent_fix,finding.validation_steps.join("; "),limitation]);
-    completed++;
+    `,[workspace,incident.id,`AI-assisted observations: ${observations}`,
+      `Proposed: ${finding.immediate_fix}`,`Proposed: ${finding.permanent_fix}`,
+      finding.validation_steps.join("; "),limitations]);
+    completed += rowCount;
   }
   return completed;
 }
@@ -177,6 +188,16 @@ async function main() {
   console.log(JSON.stringify({event:"signaldeck_investigator_completed",
     checked:processed,archived:enriched,without_matching_audit:withoutMatch,ai_findings:aiFindings}));
 }
+async function analyzeSingleIncident(id) {
+  if (!AI_ENABLED) throw new Error("ai_analysis_disabled");
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) {
+    throw new Error("invalid_analysis_incident_id");
+  }
+  const findings = await analyzeApplicationIncidents(id);
+  if (!findings) throw new Error("app_incident_not_eligible");
+  console.log(JSON.stringify({event:"signaldeck_targeted_analysis_completed",ai_findings:findings}));
+}
+
 async function checkRuntime([namespace, deployment, observedAt]) {
   if (!logView || !validKubernetesName(namespace) || !validKubernetesName(deployment) ||
       !Number.isFinite(Date.parse(observedAt))) throw new Error("invalid_runtime_check_scope");
@@ -191,7 +212,8 @@ try {
   const args = process.argv.slice(2);
   if (args.length === 0) await main();
   else if (args[0] === "--check" && args.length === 4) await checkRuntime(args.slice(1));
-  else throw new Error("usage: job.js [--check <namespace> <deployment> <observed-at>]");
+  else if (args[0] === "--analyze-incident" && args.length === 2) await analyzeSingleIncident(args[1]);
+  else throw new Error("usage: job.js [--check <namespace> <deployment> <observed-at> | --analyze-incident <uuid>]");
 }catch(error){
   console.error("signaldeck_investigator_failed",error?.message??"unknown");
   process.exitCode=1;

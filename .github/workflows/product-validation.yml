@@ -114,6 +114,7 @@ jobs:
         run: |
           npm install --prefix cloud-run-ingest --omit=dev --no-audit --no-fund
           npm install --prefix cloud-run-read-api --omit=dev --no-audit --no-fund
+          npm install --prefix cloud-run-investigator --omit=dev --no-audit --no-fund
       - name: Exercise real PostgreSQL migration and archived API reads
         env:
           TEST_DATABASE_URL: postgresql://postgres:ci-password@127.0.0.1:5432/signaldeck_test

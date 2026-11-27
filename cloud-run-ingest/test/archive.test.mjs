@@ -129,3 +129,27 @@ test("absent replica counts and deleted snapshots do not imply a scale-down", ()
   };
   assert.equal(planArchive([deployment, deleted], NOW).evidence.length, 0);
 });
+
+test("a structured response handling log preserves only validated mapping fields", () => {
+  const record = {
+    ...base, signal_type: "log", severity: "ERROR", message: "Dependency request failed",
+    trace_id: "a".repeat(32), span_id: "b".repeat(16),
+    attributes: {
+      "signaldeck.event.name": "dependency_error_mapped_to_http_response",
+      "signaldeck.dependency.status_code": "503",
+      "http.response.status_code": 500,
+      "event.untrusted": "private-fixture",
+    },
+  };
+  const saved = planArchive([record], NOW).evidence[0];
+  assert.equal(saved.sourceType, "application_log");
+  assert.deepEqual(saved.payload.response_handling, { dependency_status_code: 503, response_status_code: 500 });
+  assert.ok(!JSON.stringify(saved.payload).includes("private-fixture"));
+  for (const invalid of [
+    { ...record, trace_id: "" },
+    { ...record, attributes: { ...record.attributes, "http.response.status_code": { value: 500 } } },
+    { ...record, attributes: { ...record.attributes, "signaldeck.event.name": "other-event" } },
+  ]) {
+    assert.equal(planArchive([invalid], NOW).evidence[0].payload.response_handling, undefined);
+  }
+});

@@ -20,6 +20,18 @@ function bucket(time) {
 function stableId(parts) {
   return createHash("sha256").update(parts.map(p => String(p ?? "")).join("|")).digest("hex");
 }
+function responseHandling(attributes, record) {
+  if (attributes["signaldeck.event.name"] !== "dependency_error_mapped_to_http_response" ||
+      typeof record.trace_id !== "string" || !/^[a-f0-9]{32}$/i.test(record.trace_id) ||
+      typeof record.span_id !== "string" || !/^[a-f0-9]{16}$/i.test(record.span_id)) return null;
+  const downstream = attributes["signaldeck.dependency.status_code"];
+  const emitted = attributes["http.response.status_code"];
+  const isErrorStatus = value => (typeof value === "number" || typeof value === "string") &&
+    /^[45][0-9]{2}$/.test(String(value));
+  if (!isErrorStatus(downstream) || !isErrorStatus(emitted)) return null;
+  return { dependency_status_code: Number(downstream), response_status_code: Number(emitted) };
+}
+
 function incidentDescriptor(record, now) {
   const observed = Date.parse(record.observed_at);
   if (!Number.isFinite(observed) || observed < now - MAX_EVENT_AGE_MS || observed > now + 60_000) return null;
@@ -56,6 +68,8 @@ function incidentDescriptor(record, now) {
     sourceType = "application_log";
     payload = { trace_id: safeText(record.trace_id, 100), span_id: safeText(record.span_id, 100),
       severity: record.severity ?? "ERROR", excerpt: safeText(record.message, 600) };
+    const handling = responseHandling(attrs, record);
+    if (handling) payload.response_handling = handling;
   } else if (signal === "k8s_event" && attrs["k8s.kind"] === "Deployment" &&
     [0, "0"].includes(attrs["k8s.deployment.replicas"]) &&
     attrs["k8s.watch.type"] !== "DELETED") {

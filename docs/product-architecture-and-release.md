@@ -63,9 +63,18 @@ Passing CI only establishes that syntax, build and tests succeed in disposable e
 - Deploy read API, ingestion service and dashboard with existing Cloud Run auth and secret mappings.
 - Set archive flag **only after** schema/privilege checks. Keep `SIGNALDECK_ARCHIVE_ENABLED=false` by default.
 - Create a separate investigator service account with **Cloud Logging read-only** and narrowly scoped Cloud SQL writes, then deploy/run the Cloud Run Job.
+- The first provider smoke test uses the bundled synthetic incident. Run `npm --prefix cloud-run-investigator run trial:ai` with Application Default Credentials and explicit `SIGNALDECK_GCP_PROJECT_ID` and `SIGNALDECK_VERTEX_MODEL`. Set `SIGNALDECK_VERTEX_REGION` to a supported endpoint (the trial defaults to `us`). This command makes one model request and has no archive database connection.
 - Enable `SIGNALDECK_AI_ENABLED=true` and a validated model only after reviewing sensitive data policy and a Vertex AI spending limit. The application limits to 2 model analyses per job execution, but a recurring schedule requires an external budget safeguard.
 - Confirm a controlled new failure remains reconstructable after the raw telemetry record expires.
 - Do not deploy with a broad public allow-unauthenticated permission or use the GKE collector's ingestion key for privileged evidence analysis.
+
+## Structured application evidence
+
+An instrumented application can record response handling as an OTLP error log on the incoming server span. Send the original trace and span IDs with `signaldeck.event.name=dependency_error_mapped_to_http_response`, integer `signaldeck.dependency.status_code`, and integer `http.response.status_code`. The archive keeps the two validated HTTP codes. The investigator matches the log to a server span and a single direct dependency span in the same archived investigation. The timestamps and HTTP codes must agree.
+
+The model selects typed observations and cites a source for each one. SignalDeck renders and saves those observations from the cited facts, with the original archive IDs. The response mapping cites the log and both spans. The cause of the dependency response remains unknown until independently established. Recovery and prevention suggestions are labeled as proposals.
+
+For a controlled Cloud Run execution, use `job.js --analyze-incident <uuid>` with AI explicitly enabled for that execution. The job reads one eligible application investigation in the configured workspace and saves its validated analysis.
 
 ## Cloud cost policy
 

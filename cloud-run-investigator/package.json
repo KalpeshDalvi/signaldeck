@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node job.js",
+    "trial:ai": "node ai-trial.js",
     "test": "node --test test/*.test.mjs"
   },
   "engines": {
