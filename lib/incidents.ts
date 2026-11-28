@@ -1,4 +1,5 @@
 import { workspaceId } from "./workspace";
+import type { RecoveryValidation } from "./incident-recovery";
 import {
   appendStoredIncidentNote,
   ensureStoredIncidents,
@@ -8,12 +9,19 @@ import {
   listStoredIncidents,
   listStoredIncidentHistory,
   updateStoredIncident,
+  saveStoredRecoveryValidation,
 } from "./incident-postgres";
 
 export type IncidentStatus = "detected" | "investigating" | "mitigated" | "resolved";
 export type IncidentSeverity = "SEV-1" | "SEV-2" | "SEV-3";
 
-export type IncidentNote = { id: string; author: string; message: string; created_at: string };
+export type IncidentNote = {
+  id: string;
+  author: string;
+  message: string;
+  created_at: string;
+  recovery_validation?: RecoveryValidation;
+};
 export type IncidentRecord = {
   id: string;
   workspace_id: string;
@@ -31,7 +39,9 @@ export type IncidentRecord = {
   notes: IncidentNote[];
 };
 
-export type IncidentCandidate = Pick<IncidentRecord, "workspace_id" | "title" | "service_name" | "environment" | "severity" | "summary">;
+export type IncidentCandidate = Pick<IncidentRecord, "workspace_id" | "title" | "service_name" | "environment" | "severity" | "summary"> & {
+  latest_signal_at?: string;
+};
 export type IncidentHistoryEntry = Pick<IncidentRecord,
   "id" | "title" | "environment" | "severity" | "status" | "owner" | "updated_at">;
 
@@ -107,16 +117,19 @@ export async function ensureIncidents(inputs: IncidentCandidate[]) {
   const normalized = inputs.map(input => ({ ...input, workspace_id: workspaceId(input.workspace_id) }));
   const workspaces = [...new Set(normalized.map(input => input.workspace_id))];
   const active = new Map<string, IncidentRecord>();
+  const resolved = new Map<string, IncidentRecord>();
   const keyFor = (input: IncidentCandidate) => JSON.stringify([input.workspace_id, incidentKey(input)]);
   await Promise.all(workspaces.map(async workspace => {
     for (const incident of await listLegacyIncidents(workspace)) {
       const key = keyFor(incident);
       if (incident.status !== "resolved" && !active.has(key)) active.set(key, incident);
+      if (incident.status === "resolved" && Date.parse(incident.resolved_at ?? incident.updated_at) >
+        Date.parse(resolved.get(key)?.resolved_at ?? resolved.get(key)?.updated_at ?? "1970-01-01")) resolved.set(key, incident);
     }
   }));
   const unique = new Map(normalized.map(input => [keyFor(input), input]));
   const records = new Map(await Promise.all(Array.from(unique, async ([key, input]) =>
-    [key, await ensureLegacyIncident(input, active.get(key))] as const,
+    [key, await ensureLegacyIncident(input, active.get(key), resolved.get(key))] as const,
   )));
   return normalized.map(input => records.get(keyFor(input))!);
 }
@@ -126,7 +139,13 @@ export async function ensureIncident(input: IncidentCandidate) {
   return incident;
 }
 
-async function ensureLegacyIncident(input: IncidentCandidate, existing?: IncidentRecord) {
+async function ensureLegacyIncident(
+  { latest_signal_at, ...input }: IncidentCandidate,
+  existing?: IncidentRecord,
+  resolved?: IncidentRecord,
+) {
+  if (!existing && resolved && latest_signal_at &&
+      Date.parse(latest_signal_at) <= Date.parse(resolved.resolved_at ?? resolved.updated_at)) return resolved;
   if (existing) {
     if (existing.title !== input.title || existing.summary !== input.summary || existing.severity !== input.severity) {
       return updateLegacyIncident(existing, { title: input.title, summary: input.summary, severity: input.severity });
@@ -181,8 +200,10 @@ async function updateLegacyIncident(current: IncidentRecord, patch: IncidentPatc
     ...current,
     ...patch,
     updated_at: now,
-    mitigated_at: patch.status === "mitigated" && !current.mitigated_at ? now : current.mitigated_at,
-    resolved_at: patch.status === "resolved" && !current.resolved_at ? now : current.resolved_at,
+    mitigated_at: patch.status === "mitigated" && current.status !== "mitigated" ? now : current.mitigated_at,
+    resolved_at: patch.status === undefined ? current.resolved_at
+      : patch.status === "resolved" ? (current.status === "resolved" ? current.resolved_at ?? now : now)
+      : null,
   };
 
   const db = config();
@@ -216,4 +237,16 @@ export async function addIncidentNote(id: string, author: string, message: strin
   const incident = await getIncident(id, requestedWorkspace);
   if (!incident) throw new IncidentNotFoundError();
   return updateLegacyIncident(incident, { notes: [...incident.notes, note] });
+}
+
+export async function recordIncidentRecovery(id: string, validation: RecoveryValidation) {
+  const postgres = incidentPool();
+  if (!postgres) return false;
+  return saveStoredRecoveryValidation(postgres, id, {
+    id: crypto.randomUUID(),
+    author: "SignalDeck",
+    message: `Post-mitigation request returned HTTP ${validation.http_status} on the same route.`,
+    created_at: new Date().toISOString(),
+    recovery_validation: validation,
+  });
 }
