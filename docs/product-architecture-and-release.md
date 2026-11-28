@@ -58,6 +58,7 @@ Passing CI only establishes that syntax, build and tests succeed in disposable e
 3. TypeScript checks and the Next.js build;
 4. disposable PostgreSQL 16 migrations (001 and 003 twice), replay deduplication and cross-tenant evidence FK check;
 5. read API authentication and archived evidence retrieval.
+6. A Chromium drill on the production standalone build exercises OTLP failure, archive evidence, incident ownership, linking, mitigation, recovery and resolution. It replays the failed telemetry after restart and checks saved records after fixture retention cleanup. The drill uses loopback services and a dedicated disposable PostgreSQL database.
 
 ## Deployment prerequisites (explicit human/authorized Work handoff)
 
