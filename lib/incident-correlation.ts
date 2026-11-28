@@ -20,7 +20,7 @@ function serviceNameFromTarget(target?:string){return target?.replace(/^https?:\
 
 export function correlateIncident(records:TelemetryRecord[],primary?:ServiceSummary):CorrelationFinding|null{
  if(!primary)return null;
- const traces=records.filter(r=>r.signal_type==="trace"),failures=traces.filter(isFailure),serviceFailures=failures.filter(r=>r.service_name===primary.name);
+ const traces=records.filter(r=>r.signal_type==="trace"&&r.environment===primary.environment),failures=traces.filter(isFailure),serviceFailures=failures.filter(r=>r.service_name===primary.name);
  const ids=new Set(serviceFailures.map(r=>r.trace_id).filter(Boolean)),relatedSpans=traces.filter(r=>r.trace_id&&ids.has(r.trace_id));
  const counts=new Map<string,number>(); for(const span of relatedSpans){if(!isFailure(span))continue;if(span.service_name!==primary.name)counts.set(span.service_name,(counts.get(span.service_name)??0)+1);const target=serviceNameFromTarget(downstreamTarget(span));if(target&&target!==primary.name)counts.set(target,(counts.get(target)??0)+1);}
  const dependency=[...counts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0],dependencyHits=dependency?counts.get(dependency)??0:0;
@@ -28,13 +28,14 @@ export function correlateIncident(records:TelemetryRecord[],primary?:ServiceSumm
  // proof that the same condition was present when this incident occurred.
  const failureTimes=serviceFailures.map(r=>Date.parse(r.observed_at)).filter(Number.isFinite);
  const overlapsFailure=(r:TelemetryRecord)=>failureTimes.some(t=>Math.abs(Date.parse(r.observed_at)-t)<=3*60_000);
- const kube=records.filter(r=>r.signal_type==="k8s_event"),terms=[primary.name,dependency].filter(Boolean) as string[];
+ const kube=records.filter(r=>r.signal_type==="k8s_event"&&r.environment===primary.environment),terms=[primary.name,dependency].filter(Boolean) as string[];
  const relatedKube=kube.filter(r=>overlapsFailure(r)&&terms.some(t=>text(r).includes(t.toLowerCase())));
  // Prefer a zero-replica snapshot observed during failure over a later recovery snapshot.
  const dependencyDeployments=dependency?relatedKube.filter(r=>r.attributes["k8s.kind"]==="Deployment"&&String(r.attributes["k8s.deployment.name"]??r.service_name)===dependency):[];
- const dependencyDeployment=dependencyDeployments.find(r=>r.attributes["k8s.deployment.replicas"]!==undefined&&Number(r.attributes["k8s.deployment.replicas"])===0)??dependencyDeployments[0];
+ const dependencyDeployment=dependencyDeployments.find(r=>[0, "0"].includes(r.attributes["k8s.deployment.replicas"] as number | string))??dependencyDeployments[0];
  const dependencyService=dependency?relatedKube.find(r=>r.attributes["k8s.kind"]==="Service"&&String(r.attributes["k8s.service.name"]??r.service_name)===dependency):undefined;
- const replicas=dependencyDeployment?Number(dependencyDeployment.attributes["k8s.deployment.replicas"]??NaN):NaN,ready=dependencyDeployment?Number(dependencyDeployment.attributes["k8s.deployment.ready_replicas"]??0):NaN;
+ const count=dependencyDeployment?.attributes["k8s.deployment.replicas"];
+ const replicas=typeof count==="number"||(typeof count==="string"&&/^\d+$/.test(count))?Number(count):NaN,ready=dependencyDeployment?Number(dependencyDeployment.attributes["k8s.deployment.ready_replicas"]??0):NaN;
  const deploymentUnavailable=Boolean(dependencyDeployment&&Number.isFinite(replicas)&&replicas===0);
  // Avoid mistaking a pod's historical last termination for its current condition.
  // Collapse repeated snapshots of the same unhealthy object/reason.

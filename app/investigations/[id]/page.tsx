@@ -2,8 +2,19 @@ import Link from "next/link";
 import { PageHeader } from "@/components/AppShell";
 import { getArchivedInvestigation } from "@/lib/investigation-archive";
 import { formatCentralDateTime } from "@/lib/time";
+import { Suspense } from "react";
+import { suggestIncidentRecovery } from "@/lib/incident-recovery";
+import { getInvestigationIncidentId } from "@/lib/incident-investigation-links";
 
 export const dynamic = "force-dynamic";
+
+async function IncidentResponseLink({ id }: { id: string }) {
+  const incidentId = await getInvestigationIncidentId(id).catch((error: unknown) => {
+    console.error("Unable to retrieve investigation incident", error instanceof Error ? error.name : "");
+    return null;
+  });
+  return incidentId ? <Link href={`/incidents/${incidentId}`}>Open incident response</Link> : null;
+}
 
 export default async function SavedInvestigationPage({ params }: {
   params: Promise<{ id: string }>
@@ -23,11 +34,13 @@ export default async function SavedInvestigationPage({ params }: {
     </>;
   }
   const { investigation: record, evidence } = result.data;
+  const guidance = suggestIncidentRecovery(evidence, record.impacted_service);
   return <>
     <PageHeader eyebrow="SAVED INVESTIGATION"
       title={`${record.impacted_service ?? "Unknown workload"} · ${record.environment}`}
       description={`Evidence recorded around ${formatCentralDateTime(record.incident_at)}`}>
       <span className="pill info">{record.status}</span>
+      <Suspense><IncidentResponseLink id={record.id} /></Suspense>
       <a href={`/investigations/${record.id}/postmortem`}>Download draft postmortem</a>
     </PageHeader>
     <p style={{ marginBottom: 16 }}><Link href="/investigations">All saved investigations</Link></p>
@@ -38,9 +51,11 @@ export default async function SavedInvestigationPage({ params }: {
       <p><strong>Verified mechanism:</strong> {record.verified_mechanism ?? "Not independently verified"}</p>
       <p><strong>Initiating change:</strong> {record.initiating_change ?? "Not yet identified"}</p>
       <p><strong>Initiating identity:</strong> {record.initiating_actor ?? "Not yet identified"}</p>
-      <p><strong>Immediate recovery:</strong> {record.immediate_recovery ?? "Requires investigation"}</p>
+      <p><strong>Immediate recovery:</strong> {record.immediate_recovery ?? guidance?.recovery ?? "Requires investigation"}</p>
       <p><strong>Prevention:</strong> {record.recurrence_prevention ?? "Requires further evidence"}</p>
-      <p><strong>Verification:</strong> {record.verification_plan ?? "Requires validation"}</p>
+      <p><strong>Verification:</strong> {record.verification_plan ?? guidance?.validation ?? "Requires validation"}</p>
+      {guidance && (!record.immediate_recovery || !record.verification_plan) &&
+        <p>Suggested recovery checks use source IDs {guidance.sourceIds.join(", ")}.</p>}
       <p><strong>Limitations:</strong> {record.limitations ?? "No limitations recorded"}</p>
     </article>
     <article className="panel">

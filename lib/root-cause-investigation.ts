@@ -69,19 +69,22 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
   );
   // Require a matching failed request close to the unhealthy Kubernetes state;
   // the oldest failure in a window may belong to a different incident.
+  const near = (first: TelemetryRecord, second: TelemetryRecord) =>
+    first.workspace_id === second.workspace_id && first.environment === second.environment &&
+    Math.abs(Date.parse(first.observed_at) - Date.parse(second.observed_at)) <= 5 * 60_000;
   const scaledToZero = records
     .filter(r =>
       r.signal_type === "k8s_event" &&
       r.attributes["k8s.kind"] === "Deployment" &&
-      Number(r.attributes["k8s.deployment.replicas"]) === 0 &&
+      (r.attributes["k8s.deployment.replicas"] === 0 || r.attributes["k8s.deployment.replicas"] === "0") &&
       scope.has(String(r.attributes["k8s.deployment.name"] ?? r.service_name).toLowerCase()) &&
-      failedTraces.some(f => Math.abs(Date.parse(f.observed_at) - Date.parse(r.observed_at)) <= 5 * 60_000)
+      failedTraces.some(f => near(f, r))
     )
     .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at));
   if (scaledToZero.length > 0) {
     const k = scaledToZero[0];
     const workload = String(k.attributes["k8s.deployment.name"] ?? k.service_name);
-    const failedTrace = [...failedTraces].sort((a,b) =>
+    const failedTrace = failedTraces.filter(r => near(r, k)).sort((a,b) =>
       Math.abs(Date.parse(a.observed_at)-Date.parse(k.observed_at)) -
       Math.abs(Date.parse(b.observed_at)-Date.parse(k.observed_at))
     )[0];
@@ -97,7 +100,7 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
     return {
       source: "Kubernetes",
       cause: `${workload} Deployment configured for zero replicas`,
-      mechanism: `A Kubernetes snapshot near the failed request shows ${workload} with desired replicas set to zero. The application dependency therefore had no pods available to serve requests. This proves the observed workload state, not who or what changed the replica count.`,
+      mechanism: `A Kubernetes snapshot near the failed request shows ${workload} with desired replicas set to zero. The snapshot supports a workload availability hypothesis. Use the dependency trace, endpoints, and audit history to verify the application failure mechanism and initiating change.`,
       recovery: `Restore ${workload} to the approved replica count, verify Service endpoints, and repeat the failed transaction.`,
       permanentFix: "Trace the scale-down to the owning actor or automation using Kubernetes audit logs, GitOps or deployment history, and autoscaler configuration. Correct the authorized source of the unwanted change.",
       prevention: "Enforce approved minimum availability for critical services through GitOps reviews, admission guardrails, and alerts on desired replicas becoming zero; ensure disaster-recovery workflows are exempted deliberately.",
@@ -107,12 +110,11 @@ export function investigateRootCause(records: TelemetryRecord[], serviceNames: s
     };
   }
   const names = new Set(serviceNames.filter(Boolean).map(s => s.toLowerCase()));
-  const failureTraceIds = new Set(failedTraces.map(r => r.trace_id).filter(Boolean));
   const relevant = records.filter(r =>
     r.signal_type === "log" &&
     (names.has(r.service_name.toLowerCase()) || serviceNames.some(s => JSON.stringify(r.attributes).toLowerCase().includes(s.toLowerCase()))) &&
-    (Boolean(r.trace_id && failureTraceIds.has(r.trace_id)) ||
-      failedTraces.some(f => Math.abs(Date.parse(f.observed_at) - Date.parse(r.observed_at)) <= 5 * 60_000))
+    failedTraces.some(f => f.workspace_id === r.workspace_id && f.environment === r.environment &&
+      ((r.trace_id && r.trace_id === f.trace_id) || near(f, r)))
   );
   const hits = relevant.flatMap(r => {
     const rule = patterns.find(p => p.test.test(r.message));

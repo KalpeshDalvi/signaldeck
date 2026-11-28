@@ -100,9 +100,13 @@ export async function updateStoredIncident(db: Pool, id: string, patch: Incident
         summary = COALESCE(input.patch->>'summary', incident.summary),
         updated_at = statement_timestamp(),
         mitigated_at = CASE WHEN input.patch->>'status' = 'mitigated'
-          THEN COALESCE(incident.mitigated_at, statement_timestamp()) ELSE incident.mitigated_at END,
+          THEN CASE WHEN incident.status = 'mitigated'
+            THEN COALESCE(incident.mitigated_at, statement_timestamp()) ELSE statement_timestamp() END
+          ELSE incident.mitigated_at END,
         resolved_at = CASE WHEN input.patch->>'status' = 'resolved'
-          THEN COALESCE(incident.resolved_at, statement_timestamp()) ELSE incident.resolved_at END
+          THEN CASE WHEN incident.status = 'resolved'
+            THEN COALESCE(incident.resolved_at, statement_timestamp()) ELSE statement_timestamp() END
+          WHEN input.patch ? 'status' THEN NULL ELSE incident.resolved_at END
     FROM input
     WHERE incident.workspace_id = $1 AND incident.id = $2
     RETURNING incident.*
@@ -122,16 +126,16 @@ export async function appendStoredIncidentNote(db: Pool, id: string, note: Incid
   return rows[0] ? toIncident(rows[0]) : null;
 }
 
-async function findActiveIncidents(db: Pool | PoolClient, workspace: string, candidates: string, lock: boolean) {
+async function findMatchingIncidents(db: Pool | PoolClient, workspace: string, candidates: string, lock: boolean) {
   const { rows } = await db.query<IncidentRow>(`
     SELECT incident.*
-    FROM jsonb_to_recordset($2::jsonb) AS candidate(service_name text, environment text)
+    FROM jsonb_to_recordset($2::jsonb) AS candidate(service_name text, environment text, latest_signal_at timestamptz)
     CROSS JOIN LATERAL (
       SELECT * FROM public.incidents
       WHERE workspace_id = $1
         AND service_name = candidate.service_name AND environment = candidate.environment
-        AND status <> 'resolved'
-      ORDER BY updated_at DESC, id
+        AND (status <> 'resolved' OR candidate.latest_signal_at <= COALESCE(resolved_at, updated_at))
+      ORDER BY (status = 'resolved'), COALESCE(resolved_at, updated_at) DESC, id
       LIMIT 1
       ${lock ? "FOR NO KEY UPDATE" : ""}
     ) AS incident
@@ -140,7 +144,8 @@ async function findActiveIncidents(db: Pool | PoolClient, workspace: string, can
 }
 
 function needsUpdate(current: IncidentRow, candidate: IncidentCandidate) {
-  return current.title !== candidate.title || current.summary !== candidate.summary || current.severity !== candidate.severity;
+  return current.status !== "resolved" &&
+    (current.title !== candidate.title || current.summary !== candidate.summary || current.severity !== candidate.severity);
 }
 
 export async function ensureStoredIncidents(db: Pool, inputs: IncidentCandidate[]) {
@@ -150,7 +155,7 @@ export async function ensureStoredIncidents(db: Pool, inputs: IncidentCandidate[
     return [incidentKey(input), input];
   }));
   const requested = JSON.stringify([...candidates.values()]);
-  const active = await findActiveIncidents(db, workspace, requested, false);
+  const active = await findMatchingIncidents(db, workspace, requested, false);
   const inInputOrder = (rows: Map<string, IncidentRow>) => inputs.map(input => toIncident(rows.get(incidentKey(input))!));
   const requiresWrite = [...candidates].some(([key, candidate]) => {
     const current = active.get(key);
@@ -164,7 +169,7 @@ export async function ensureStoredIncidents(db: Pool, inputs: IncidentCandidate[
     await client.query("BEGIN");
     // Recheck after taking the lock so simultaneous renders cannot create duplicate active incidents.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended('signaldeck.incidents:' || $1, 0))", [workspace]);
-    const rows = await findActiveIncidents(client, workspace, requested, true);
+    const rows = await findMatchingIncidents(client, workspace, requested, true);
     const inserts: IncidentCandidate[] = [];
     const updates: (IncidentCandidate & { id: string })[] = [];
     for (const [key, candidate] of candidates) {
@@ -203,4 +208,20 @@ export async function ensureStoredIncidents(db: Pool, inputs: IncidentCandidate[
   } finally {
     client.release(discard);
   }
+}
+
+export async function saveStoredRecoveryValidation(db: Pool, id: string, note: IncidentNote) {
+  const validation = note.recovery_validation;
+  if (!validation) return false;
+  const { rowCount } = await db.query(`
+    UPDATE public.incidents
+    SET notes = notes || jsonb_build_array($3::jsonb), updated_at = statement_timestamp()
+    WHERE workspace_id = $1 AND id = $2 AND status = 'mitigated'
+      AND date_trunc('milliseconds', mitigated_at) = $4::timestamptz
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(notes) AS entry
+        WHERE entry->'recovery_validation'->>'telemetry_source_id' = $5
+      )
+  `, [scopedWorkspace(), id, JSON.stringify(note), validation.mitigated_at, validation.telemetry_source_id]);
+  return rowCount === 1;
 }

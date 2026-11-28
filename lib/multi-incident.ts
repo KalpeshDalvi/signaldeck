@@ -9,6 +9,7 @@ export type IncidentCandidate = {
   records: TelemetryRecord[];
   firstFailureAt?: string;
   lastFailureAt?: string;
+  latestSignalAt?: string;
   traceIds: string[];
 };
 
@@ -66,7 +67,11 @@ export function clusterIncidentCandidates(records: TelemetryRecord[], options?: 
       finding,
       records: scoped,
       firstFailureAt: failures[0]?.observed_at,
-      lastFailureAt: failures[failures.length - 1]?.observed_at,
+      lastFailureAt: failures.at(-1)?.observed_at,
+      latestSignalAt: failures.at(-1)?.observed_at ?? records.reduce<string | undefined>((latest, record) =>
+        record.signal_type === "trace" && record.service_name === service.name &&
+        record.environment === service.environment && Date.parse(record.observed_at) > (latest ? Date.parse(latest) : -Infinity)
+          ? record.observed_at : latest, undefined),
       traceIds,
     });
   }

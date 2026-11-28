@@ -82,7 +82,7 @@ jobs:
       - name: Install dashboard dependencies
         run: npm install --no-audit --no-fund
       - name: Verify archived evidence rendering
-        run: npx tsx --test lib/test/time.test.ts lib/test/investigation-postmortem.test.ts
+        run: npx tsx --test lib/test/time.test.ts lib/test/investigation-postmortem.test.ts lib/test/incident-recovery.test.ts
       - name: Typecheck dashboard
         run: npx tsc --noEmit
       - name: Build dashboard
