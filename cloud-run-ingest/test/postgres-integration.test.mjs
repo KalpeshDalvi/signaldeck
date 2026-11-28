@@ -69,6 +69,10 @@ test("OTLP persists durable evidence with the documented ingest and reader grant
     const migrate = (name) => admin.query(readFileSync(new URL(`cloud-sql/migrations/${name}`, root), "utf8"));
     await migrate("001_bootstrap.sql");
     await migrate("002_telemetry_retention.sql");
+    for (const file of ["008_telemetry_retention_index.sql", "009_workspace_telemetry_retention.sql"]) {
+      await migrate(file);
+      await migrate(file);
+    }
     await migrate("003_durable_investigations.sql");
     await migrate("003_durable_investigations.sql");
     // Mirror the deployed table grants with fixture roles in the disposable database.
@@ -116,18 +120,38 @@ test("OTLP persists durable evidence with the documented ingest and reader grant
     );
     assert.ok(raw.rows.some((row) => row.trace_id === failure.traceId && row.status_code === 500));
     assert.equal(raw.rows.filter((row) => row.trace_id === healthy.traceId && row.status_code === 200).length, 1);
-    // Age only the failed trace, then exercise the raw telemetry cleanup procedure.
+    // Age the failed trace, preserve a recent success, and seed an old row in another workspace.
     const aged = await admin.query(
       "UPDATE public.telemetry_events SET created_at = now() - interval '8 days' WHERE trace_id = $1",
       [failure.traceId],
     );
     assert.ok(aged.rowCount > 0);
-    await admin.query("CALL public.cleanup_old_telemetry(7)");
+    const otherTraceId = randomBytes(16).toString("hex");
+    await admin.query(`
+      INSERT INTO public.telemetry_events (workspace_id, signal_type, service_name, trace_id, created_at)
+      VALUES ('other', 'trace', 'checkout', $1, now() - interval '8 days')
+    `, [otherTraceId]);
+    const cleanup = (workspace, days, batchSize) => admin.query(
+      "SELECT public.cleanup_workspace_telemetry($1, $2, $3) AS deleted", [workspace, days, batchSize],
+    ).then(result => result.rows[0].deleted);
+
+    await assert.rejects(cleanup(" ", 7, 1), { code: "22023" });
+    await assert.rejects(cleanup("default", 0, 1), { code: "22023" });
+    await assert.rejects(cleanup("default", 7, 5001), { code: "22023" });
+    assert.equal(await cleanup("default", 7, 1), 1);
+    assert.equal(await cleanup("default", 7, 1000), aged.rowCount - 1);
+    assert.equal(await cleanup("default", 7, 1000), 0);
     const remaining = await admin.query(
-      "SELECT trace_id FROM public.telemetry_events WHERE trace_id IN ($1, $2)",
-      [failure.traceId, healthy.traceId],
+      "SELECT trace_id FROM public.telemetry_events WHERE trace_id = ANY($1::text[])",
+      [[failure.traceId, healthy.traceId, otherTraceId]],
     );
-    assert.deepEqual(remaining.rows, [{ trace_id: healthy.traceId }]);
+    assert.deepEqual(new Set(remaining.rows.map(row => row.trace_id)), new Set([healthy.traceId, otherTraceId]));
+    await admin.query("SET ROLE signaldeck_test_reader");
+    try {
+      await assert.rejects(cleanup("default", 7, 1), { code: "42501" });
+    } finally {
+      await admin.query("RESET ROLE");
+    }
 
     const readerEnv = { ...env, PGUSER: "signaldeck_test_reader", SIGNALDECK_READ_KEY: key };
     const reader = await startService(t, "cloud-run-read-api/server.js", 18080, readerEnv);
