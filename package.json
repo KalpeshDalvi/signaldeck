@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:mvp-browser": "node --test scripts/test-mvp-browser.mjs"
   },
   "dependencies": {
     "next": "latest",
@@ -21,6 +22,7 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "tsx": "^4.20.0",
-    "typescript": "latest"
+    "typescript": "latest",
+    "playwright": "1.65.1"
   }
 }

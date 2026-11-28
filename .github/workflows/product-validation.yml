@@ -132,6 +132,44 @@ jobs:
           TEST_DATABASE_URL: postgresql://postgres:ci-password@127.0.0.1:5432/signaldeck_test
         run: npx tsx --test lib/test/investigation-acknowledgements.test.ts
 
+  mvp-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-browser-password
+          POSTGRES_DB: signaldeck_browser_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d signaldeck_browser_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dashboard and service dependencies
+        run: |
+          npm install --no-audit --no-fund
+          npm install --prefix cloud-run-ingest --omit=dev --no-audit --no-fund
+          npm install --prefix cloud-run-read-api --omit=dev --no-audit --no-fund
+      - name: Install Chromium for the browser drill
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: Build the standalone dashboard
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Exercise the full MVP workflow on a disposable database
+        env:
+          TEST_BROWSER_DATABASE_URL: postgresql://postgres:ci-browser-password@127.0.0.1:5432/signaldeck_browser_test
+        run: npm run test:mvp-browser
+
   lab-telemetry:
     runs-on: ubuntu-latest
     timeout-minutes: 8
